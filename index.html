@@ -1,0 +1,2218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Pulse Topology - Terminal cable viz</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; color: #ccc; font-family: 'Courier New', monospace; overflow: hidden; }
+  canvas { display: block; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    display: flex; flex-direction: column; gap: 8px; max-width: 300px;
+  }
+  #ui label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+  #ui input[type=checkbox] { width: auto; margin-right: 6px; vertical-align: middle; }
+  #ui select, #ui input[type=range] { background: #111; border: 1px solid #333; color: #ccc;
+    padding: 4px 8px; font-family: inherit; font-size: 12px; cursor: pointer; width: 100%; }
+  #ui .hint { font-size: 10px; color: #555; line-height: 1.4; }
+  #info {
+    position: fixed; bottom: 16px; left: 16px; z-index: 10;
+    font-size: 11px; color: #555; line-height: 1.6; max-width: 560px;
+  }
+  #tooltip {
+    position: fixed; z-index: 20; pointer-events: none;
+    background: rgba(0,0,0,0.85); border: 1px solid #333;
+    padding: 8px 12px; font-size: 11px; line-height: 1.7;
+    color: #eee; display: none; white-space: pre;
+    max-width: min(90vw, 420px);
+  }
+  #legend {
+    position: fixed; top: 16px; right: 16px; z-index: 10;
+    font-size: 11px; color: #666; line-height: 2; max-width: 280px;
+  }
+  .gizmo-chk { text-transform: none; letter-spacing: 0; }
+  .legend-row { display: flex; align-items: center; gap: 8px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  #err { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    background: #220000; border: 1px solid #633; padding: 20px; color: #faa; max-width: 90vw; display: none; z-index: 100; }
+  code { font-family: inherit; color: #888; }
+  #rigStats {
+    position: fixed; bottom: 16px; right: 16px; z-index: 10;
+    font-size: 11px; color: #aaa; line-height: 1.65; max-width: 300px;
+    background: rgba(10,10,18,0.88); border: 1px solid #383848;
+    padding: 10px 14px 12px;
+  }
+  #rigStats b { color: #ddd; font-weight: normal; }
+  #view2d {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 15;
+    background: #f4f4f6;
+    overflow: auto;
+    padding: 52px 20px 32px;
+    box-sizing: border-box;
+  }
+  #view2d.active { display: block; }
+  #unrollSvg { display: block; margin: 0 auto; max-width: 100%; }
+  #view2d .unroll-caption {
+    max-width: 920px;
+    margin: 0 auto 12px;
+    font-size: 11px;
+    color: #444;
+    line-height: 1.45;
+  }
+  body.mode-2d #legend,
+  body.mode-2d #rigStats,
+  body.mode-2d #info { display: none !important; }
+  body.mode-2d #ui { z-index: 50; }
+  #ui.collapsed #uiBody { display: none; }
+  #ui.collapsed { max-width: 180px; }
+</style>
+</head>
+<body>
+
+<div id="err"></div>
+
+<div id="ui">
+  <div>
+    <button type="button" id="toggleUiCollapse" style="background:#1a1a22;border:1px solid #444;color:#aaa;padding:6px 8px;font-family:inherit;font-size:11px;cursor:pointer;width:100%">Hide controls</button>
+  </div>
+  <div id="uiBody">
+  <div>
+    <button type="button" id="toggleView2d" style="background:#111;border:1px solid #444;color:#ddd;padding:8px 10px;font-family:inherit;font-size:12px;cursor:pointer;width:100%">2D cable unroll</button>
+    <button type="button" id="exportUnrollPdf" style="background:#111;border:1px solid #333;color:#ccc;padding:6px 8px;font-family:inherit;font-size:12px;cursor:pointer;width:100%;margin-top:6px">Export 2D PDF</button>
+    <p class="hint" style="margin:4px 0 0 0">Steel hang polyline rolled flat · PDF = portrait A4, one page per <code>lineID</code></p>
+  </div>
+  <div>
+    <label>Color by</label><br>
+    <select id="colorMode">
+      <option value="drop">Drop length (cable)</option>
+      <option value="height">Mount height (z)</option>
+      <option value="lineID">lineID</option>
+      <option value="universe">Universe</option>
+    </select>
+  </div>
+  <div>
+    <label>Point size</label><br>
+    <input type="range" id="ptSize" min="1" max="10" value="4" step="0.5">
+  </div>
+  <div>
+    <label>Show row (<code>lineID</code>) <span id="lineFilterHint">all</span></label><br>
+    <input type="range" id="lineFilter" min="-1" max="0" value="-1" step="1"
+      title="-1 = entire rig; otherwise one row by index in sorted lineID list">
+    <div id="lineFilterStats" class="hint" style="margin:8px 0 0 0;display:none;line-height:1.5;font-size:10px;color:#aaa"></div>
+    <div style="margin-top:10px">
+      <label>Dimmer spacing along curve <span id="dimmerSpacingHint">32</span> cm</label><br>
+      <input type="range" id="dimmerSpacingCm" min="20" max="35" value="32" step="0.5">
+      <div style="font-size:10px;color:#666;margin-top:3px">Fixed ethernet ≈ spacing − 5 cm dimmer: <b><span id="dimmerEthCableHint">27.0</span></b> cm</div>
+      <div id="dimmerCountHint" style="font-size:10px;color:#888;margin-top:5px;line-height:1.35;display:none"></div>
+      <label style="display:inline-block;margin-top:8px">First dimmer offset on curve <span id="dimmerOffsetHint">0</span> cm</label><br>
+      <input type="range" id="dimmerStartOffsetCm" min="0" max="250" value="0" step="0.5">
+      <p class="hint" style="margin:4px 0 0 0">One dimmer per bulb along the hang polyline when a row is selected (magenta); extension (yellow) only if spacing+offset pushes any dimmer past the last hang. Cyan spheres = arc-length midpoint of each row’s hang curve (always).</p>
+    </div>
+  </div>
+  <div>
+    <label>Drop line opacity</label><br>
+    <input type="range" id="lineOp" min="0" max="100" value="50" step="5">
+  </div>
+  <div>
+    <label class="gizmo-chk"><input type="checkbox" id="showGizmo" checked> CSV axis cross</label>
+    <p class="hint" style="margin:2px 0 0 0">RGB = CSV +X, +Y, +Z (designer reference rows, scaled)</p>
+  </div>
+  <div>
+    <label class="gizmo-chk"><input type="checkbox" id="showCatenary" checked> Steel catenary (OBJ)</label><br>
+    <label>Catenary opacity</label><br>
+    <input type="range" id="catOp" min="0" max="100" value="85" step="5">
+    <p class="hint" style="margin:4px 0 0 0"><code>?catLine=auto</code> (default) picks best <code>lineID</code> fit · <code>rig</code> · <code>N</code> · <code>?catFlipPy=0</code></p>
+  </div>
+  <div>
+    <label>Weights export</label><br>
+    <button type="button" id="exportLineWeights" style="background:#111;border:1px solid #333;color:#ccc;padding:6px 8px;font-family:inherit;font-size:12px;cursor:pointer;width:100%">Per-line weights (CSV)</button>
+    <p class="hint" style="margin:4px 0 0 0">Bulb cable &amp; ethernet totals, gram breakdown per <code>lineID</code> · uses <code>indoor-weights.csv</code></p>
+  </div>
+  <div class="hint">
+    <b>Cable</b>: <code id="cableKeyHint">Bulbcablelength(M)</code> (auto-detected from header)<br>
+    Scene = Boston convention: <code>X = mirror(x)</code>, <code>Y = z − zMax</code> (0 = ceiling), <code>Z = y</code>
+  </div>
+  </div>
+</div>
+
+<div id="view2d" aria-hidden="true">
+  <p class="unroll-caption">
+    Left = start of hang curve (<b>bulb-on-line</b> order, CSV mount path). Solid bar = hangs only; dashed = extension past last hang if dimmers require it.
+    <b>S</b> = total developed length. Segment labels are metres (e.g. <code>0.335m</code>, <code>8.710m</code>). Grey slanted lines join each bulb joint to its dimmer centre (same index).
+    <b>server</b> is drawn on the side of the strip toward CSV plan (<code>4</code>, <code>11</code>) — nearer first hang vs last hang.
+  </p>
+  <svg id="unrollSvg" xmlns="http://www.w3.org/2000/svg"></svg>
+</div>
+
+<div id="legend"></div>
+<div id="tooltip"></div>
+
+<div id="info">
+  Drag orbit &middot; Scroll zoom &middot; Right-drag pan &middot; Hover point<br>
+  <span style="color:#444">Serve folder with a static server &middot; Data: <code id="dataFileHint">April23_001.csv</code> · <code>?catLine=0|rig</code> · <code>?catFlipPy=0|1</code></span>
+</div>
+
+<div id="rigStats" aria-label="Rig statistics"></div>
+
+<style>
+  .dim-label {
+    background: rgba(0,0,0,0.75);
+    border: 1px solid #556;
+    border-radius: 3px;
+    padding: 2px 7px;
+    font-size: 11px;
+    font-family: 'Courier New', monospace;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  .dim-label.drop { color: #88ddff; border-color: #88ddff55; }
+</style>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+const errEl = document.getElementById('err');
+function showErr(msg) {
+  errEl.style.display = 'block';
+  errEl.textContent = msg;
+}
+
+/** Parse simple CSV (no quoted commas in cells). First row = headers. */
+function parseCSV(text) {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(l => l.trim().length);
+  if (lines.length < 2) return [];
+  const headerLine = lines[0];
+  const headers = headerLine.split(',').map(h => h.trim());
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].split(',');
+    if (parts.length < headers.length) continue;
+    const obj = {};
+    for (let j = 0; j < headers.length; j++) {
+      obj[headers[j]] = (parts[j] !== undefined ? parts[j] : '').trim();
+    }
+    rows.push(obj);
+  }
+  return { headers, rows };
+}
+
+/** Grams per unit from `indoor-weights.csv` (Item + Weight columns). */
+function parseIndoorWeights(text) {
+  const defaults = {
+    plasticBulbG: 23,
+    indoorSocketG: 56,
+    bulbCableGPerM: 21,
+    ethernetGPerM: 44,
+    dimmerG: 12.6,
+    dimmerHousingG: 15
+  };
+  const parsed = parseCSV(text);
+  if (!parsed.rows?.length) return { ...defaults };
+  const hItem = colFind(parsed.headers, h => /^item$/i.test(String(h).trim())) || parsed.headers[0];
+  const hW =
+    colFind(parsed.headers, h => /weight/i.test(String(h)) && /gram/i.test(String(h))) ||
+    colFind(parsed.headers, h => /weight/i.test(String(h))) ||
+    parsed.headers[1];
+  const out = { ...defaults };
+  for (const row of parsed.rows) {
+    const item = String(row[hItem] ?? '').trim().toLowerCase();
+    const w = num(row[hW]);
+    if (!Number.isFinite(w)) continue;
+    if (item.includes('plastic') && item.includes('bulb')) out.plasticBulbG = w;
+    else if (item.includes('socket')) out.indoorSocketG = w;
+    else if (item.includes('ethernet')) out.ethernetGPerM = w;
+    else if (item.includes('bulb') && item.includes('cable')) out.bulbCableGPerM = w;
+    else if (item.includes('dimmer') && item.includes('housing')) out.dimmerHousingG = w;
+    else if (item.includes('dimmer')) out.dimmerG = w;
+  }
+  return out;
+}
+
+function colFind(headers, pred) {
+  for (const h of headers) {
+    if (pred(h)) return h;
+  }
+  return null;
+}
+
+const KEY = {
+  index: 'index',
+  px: 'position_x',
+  py: 'position_y',
+  pz: 'position_z',
+  lineID: 'lineID',
+  bulbonline: 'bulbonline',
+  universe: 'Universe',
+};
+
+/** Plan reference for server room label (CSV position_x / position_y); same as 3D marker. */
+const SERVER_ROOM_CSV = { px: 4, py: 11 };
+
+function num(s) {
+  const n = Number(s);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function isTrue(v) {
+  if (v === undefined || v === null) return false;
+  const t = String(v).trim().toLowerCase();
+  return t === 'true' || t === '1' || t === 'yes';
+}
+
+/** Gizmo: rows with AmI_*axis*indicator = True (designer orientation; excluded from point cloud & bounds) */
+function rowIsGizmoRow(row, headers) {
+  for (const h of headers) {
+    if (!/AmI/i.test(h) || !/axis/i.test(h) || !/indicator/i.test(h)) continue;
+    if (isTrue(row[h])) return true;
+  }
+  return false;
+}
+
+function pickCableKey(headers) {
+  const k = colFind(
+    headers,
+    h => /cablelength\s*\(M\)/i.test(h) || /bulb?cablelength/i.test(h)
+  );
+  return k || 'Bulbcablelength(M)';
+}
+
+function getVal(row, h, def) {
+  if (h && row[h] !== undefined) return num(row[h]);
+  return def;
+}
+
+function buildRecord(row, headers, cableKey) {
+  const o = { _raw: { ...row } };
+  for (const h of headers) o['_' + h] = row[h];
+  o.index = num(row[KEY.index]);
+  o.px = num(row[KEY.px]);
+  o.py = num(row[KEY.py]);
+  o.pz = num(row[KEY.pz]);
+  o.cable = getVal(row, cableKey, NaN);
+  const kBC = colFind(headers, h => /BulbCables/i.test(h) && h !== cableKey);
+  o.bulbCables = kBC ? num(row[kBC]) : NaN;
+  const kBZ = colFind(headers, h => /BulbZ/i.test(h));
+  o.bulbZ = kBZ ? num(row[kBZ]) : NaN;
+  const kEth =
+    colFind(headers, h => /ethernet/i.test(h)) ||
+    colFind(headers, h => /^eth(ernet)?(\s*cable)?$/i.test(String(h).trim()));
+  o.ethernetM = kEth ? num(row[kEth]) : NaN;
+  o.lineID = getVal(row, KEY.lineID, NaN);
+  o.bulbonline = getVal(row, KEY.bulbonline, NaN);
+  o.universe = getVal(row, KEY.universe, NaN);
+  o.isGizmo = rowIsGizmoRow(row, headers);
+  if (!o.isGizmo && !Number.isFinite(o.cable)) o.cable = 0;
+  if (o.isGizmo) o.cable = Number.isFinite(o.cable) ? o.cable : 0;
+  return o;
+}
+
+/** Scene coords aligned with Boston topology-cable-viz:
+ *  X = mirrored plan x (short axis), Z = position_y (long axis),
+ *  Y = (position_z − zMax) so ceiling reference is Y=0 and longer cables go more negative (same “feel” as y = −pz with ceiling at 0). */
+function applySceneCoords(d, zMax, minPx, maxPx) {
+  d.sx = minPx + maxPx - d.px;
+  d.syMount = d.pz - zMax;
+  d.syBulb = d.pz - d.cable - zMax;
+  d.sz = d.py;
+}
+
+/** Vertex scale + offset so OBJ axis ranges match CSV rig bbox (curve span ≠ rig span on every axis). */
+function affineAxis(u, uMin, uMax, vMin, vMax) {
+  const du = uMax - uMin;
+  if (du < 1e-12) return (vMin + vMax) / 2;
+  return ((u - uMin) / du) * (vMax - vMin) + vMin;
+}
+
+/** Bounds on OBJ coords used for mapping: vx→px, vz→py, −vy→pz (Blender Y flipped to CSV z-like height). */
+function computeObjCatenaryBounds(verts) {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  let minNz = Infinity;
+  let maxNz = -Infinity;
+  for (let i = 0; i < verts.length; i++) {
+    const v = verts[i];
+    minX = Math.min(minX, v.x);
+    maxX = Math.max(maxX, v.x);
+    minZ = Math.min(minZ, v.z);
+    maxZ = Math.max(maxZ, v.z);
+    const nz = -v.y;
+    minNz = Math.min(minNz, nz);
+    maxNz = Math.max(maxNz, nz);
+  }
+  return { minX, maxX, minZ, maxZ, minNz, maxNz };
+}
+
+function objVertexToCsvBBox(v, objB, csvB) {
+  return {
+    px: affineAxis(v.x, objB.minX, objB.maxX, csvB.minPx, csvB.maxPx),
+    py: affineAxis(v.z, objB.minZ, objB.maxZ, csvB.minPy, csvB.maxPy),
+    pz: affineAxis(-v.y, objB.minNz, objB.maxNz, csvB.minPz, csvB.maxPz)
+  };
+}
+
+/** Legacy: raw-ish remap + centroid shift (see ?catMap=centroid). */
+function objVecToCsvPxPyPzCentroid(v) {
+  return { px: v.x, py: v.z, pz: -v.y };
+}
+
+function csvToSceneVec(px, py, pz, zMaxRef, minPxRef, maxPxRef) {
+  return new THREE.Vector3(minPxRef + maxPxRef - px, pz - zMaxRef, py);
+}
+
+function parseObjVerticesAndLines(text) {
+  const verts = [];
+  const segs = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('v ')) {
+      const parts = line.slice(2).trim().split(/\s+/);
+      verts.push(new THREE.Vector3(+parts[0], +parts[1], +parts[2]));
+    } else if (line.startsWith('l ')) {
+      const parts = line
+        .slice(2)
+        .trim()
+        .split(/\s+/)
+        .map(x => parseInt(x, 10) - 1);
+      if (parts.length >= 2 && parts.every(Number.isFinite)) segs.push([parts[0], parts[1]]);
+    }
+  }
+  return { verts, segs };
+}
+
+function orderPolylineFromSegments(segs, nVert) {
+  if (segs.length === 0 || nVert < 2) return [];
+  const adj = Array.from({ length: nVert }, () => []);
+  for (const [a, b] of segs) {
+    if (a >= 0 && a < nVert && b >= 0 && b < nVert) {
+      adj[a].push(b);
+      adj[b].push(a);
+    }
+  }
+  let start = 0;
+  for (let i = 0; i < nVert; i++) {
+    if (adj[i].length === 1) {
+      start = i;
+      break;
+    }
+  }
+  const out = [start];
+  let prev = -1;
+  let cur = start;
+  for (let guard = 0; guard < nVert + 8; guard++) {
+    const nexts = adj[cur].filter(x => x !== prev);
+    if (nexts.length === 0) break;
+    const next = nexts[0];
+    out.push(next);
+    prev = cur;
+    cur = next;
+    if (cur === start && out.length > 2) break;
+  }
+  return out;
+}
+
+function decimateOrderedIndices(order, maxPts) {
+  if (order.length <= maxPts) return order.slice();
+  const out = [];
+  const step = (order.length - 1) / (maxPts - 1);
+  for (let i = 0; i < maxPts - 1; i++) out.push(order[Math.round(i * step)]);
+  out.push(order[order.length - 1]);
+  return out;
+}
+
+function csvBBoxFromVizPoints(pts) {
+  if (!pts.length) return null;
+  let minPx = Infinity;
+  let maxPx = -Infinity;
+  let minPy = Infinity;
+  let maxPy = -Infinity;
+  let minPz = Infinity;
+  let maxPz = -Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const d = pts[i];
+    minPx = Math.min(minPx, d.px);
+    maxPx = Math.max(maxPx, d.px);
+    minPy = Math.min(minPy, d.py);
+    maxPy = Math.max(maxPy, d.py);
+    minPz = Math.min(minPz, d.pz);
+    maxPz = Math.max(maxPz, d.pz);
+  }
+  return { minPx, maxPx, minPy, maxPy, minPz, maxPz };
+}
+
+let HEADERS = [];
+const DATA_FILE =
+  new URLSearchParams(window.location.search).get('data') || 'April23_001.csv';
+const CATENARY_FILE =
+  new URLSearchParams(window.location.search).get('catenary') || '3D Files/catenaries.obj';
+/** bbox (default): stretch OBJ curve AABB to CSV rig AABB on px/py/pz. centroid: old center-match only. */
+const CAT_MAP_MODE = (new URLSearchParams(window.location.search).get('catMap') || 'bbox').toLowerCase();
+/** Align catenary: auto=pick lineID by nearest 3D fit, rig=full rig, N=explicit lineID */
+const CAT_LINE_Q = new URLSearchParams(window.location.search).get('catLine') ?? 'auto';
+/** Mirror CSV py (scene Z) so path runs “down” along rows; disable with catFlipPy=0 */
+const CAT_FLIP_PY_RAW = new URLSearchParams(window.location.search).get('catFlipPy');
+const CAT_FLIP_PY =
+  CAT_FLIP_PY_RAW === null ||
+  CAT_FLIP_PY_RAW === '1' ||
+  `${CAT_FLIP_PY_RAW}`.toLowerCase() === 'true';
+const MAX_CAT_VERTS = 14000;
+
+let ALL = [];
+let VIZ = [];
+let CABLE_KEY = 'Bulbcablelength(M)';
+let WEIGHT_COEFF = {
+  plasticBulbG: 23,
+  indoorSocketG: 56,
+  bulbCableGPerM: 21,
+  ethernetGPerM: 44,
+  dimmerG: 12.6,
+  dimmerHousingG: 15
+};
+
+try {
+  const res = await fetch(DATA_FILE, { cache: 'no-cache' });
+  if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+  const text = await res.text();
+  const parsed = parseCSV(text);
+  HEADERS = parsed.headers;
+  CABLE_KEY = pickCableKey(HEADERS);
+  const hHint = document.getElementById('cableKeyHint');
+  if (hHint) hHint.textContent = CABLE_KEY;
+  const fHint = document.getElementById('dataFileHint');
+  if (fHint) fHint.textContent = DATA_FILE;
+  ALL = parsed.rows.map(r => buildRecord(r, HEADERS, CABLE_KEY));
+  VIZ = ALL.filter(d => !d.isGizmo);
+  if (VIZ.length === 0) throw new Error('No data rows in ' + DATA_FILE);
+  if (VIZ.length === ALL.length) console.warn('No gizmo/axis rows (AmI_*…*indicator=True) -- orientation cross hidden.');
+  const _zMax = Math.max(...VIZ.map(d => d.pz));
+  const _minPx = Math.min(...VIZ.map(d => d.px));
+  const _maxPx = Math.max(...VIZ.map(d => d.px));
+  for (const d of ALL) applySceneCoords(d, _zMax, _minPx, _maxPx);
+} catch (e) {
+  showErr('Could not load ' + DATA_FILE + '.\n\n' + e.message + '\n\nServe this folder with a static server (e.g. python3 -m http.server).');
+  throw e;
+}
+
+try {
+  const wr = await fetch('indoor-weights.csv', { cache: 'no-cache' });
+  if (wr.ok) WEIGHT_COEFF = parseIndoorWeights(await wr.text());
+} catch (e) {
+  console.warn('[weights] indoor-weights.csv', e.message || e);
+}
+
+const dropMin = Math.min(...VIZ.map(d => d.cable));
+const dropMax = Math.max(...VIZ.map(d => d.cable));
+const zMin = Math.min(...VIZ.map(d => d.pz));
+const zMax = Math.max(...VIZ.map(d => d.pz));
+const lineIDs = [...new Set(VIZ.map(d => d.lineID).filter(Number.isFinite))].sort((a, b) => a - b);
+let catenaryLegendLine = CAT_LINE_Q;
+let catenaryEffectiveFlip = CAT_FLIP_PY;
+const universes = [...new Set(VIZ.map(d => d.universe).filter(Number.isFinite))].sort((a, b) => a - b);
+const maxLineID = lineIDs.length ? Math.max(...lineIDs) : 1;
+const maxUniv = universes.length ? Math.max(...universes) : 1;
+
+/** Per-row spacing between consecutive bulbonline hang points (CSV metres). */
+function computeRigStats(viz, sortedLineIds) {
+  const byLine = new Map();
+  for (let i = 0; i < viz.length; i++) {
+    const d = viz[i];
+    const lid = d.lineID;
+    if (!Number.isFinite(lid)) continue;
+    if (!byLine.has(lid)) byLine.set(lid, []);
+    byLine.get(lid).push(d);
+  }
+  const counts = [];
+  const pitchesPlan = [];
+  const pitches3d = [];
+  for (let li = 0; li < sortedLineIds.length; li++) {
+    const lid = sortedLineIds[li];
+    const pts = byLine.get(lid);
+    if (!pts || pts.length === 0) continue;
+    counts.push(pts.length);
+    const sorted = pts.slice().sort((a, b) => {
+      const ba = Number.isFinite(a.bulbonline) ? a.bulbonline : 0;
+      const bb = Number.isFinite(b.bulbonline) ? b.bulbonline : 0;
+      return ba - bb;
+    });
+    for (let j = 1; j < sorted.length; j++) {
+      const a = sorted[j - 1];
+      const b = sorted[j];
+      const dx = b.px - a.px;
+      const dy = b.py - a.py;
+      const dz = b.pz - a.pz;
+      pitchesPlan.push(Math.hypot(dx, dy));
+      pitches3d.push(Math.sqrt(dx * dx + dy * dy + dz * dz));
+    }
+  }
+  const totalBulbs = viz.length;
+  const numRows = counts.length;
+  const minPerLine = numRows ? Math.min(...counts) : 0;
+  const maxPerLine = numRows ? Math.max(...counts) : 0;
+  const segmentCount = pitchesPlan.length;
+  function summarize(vals) {
+    if (!vals.length) return { mean: NaN, min: NaN, max: NaN };
+    return {
+      mean: vals.reduce((s, p) => s + p, 0) / vals.length,
+      min: Math.min(...vals),
+      max: Math.max(...vals)
+    };
+  }
+  const plan = summarize(pitchesPlan);
+  const d3 = summarize(pitches3d);
+  return {
+    totalBulbs,
+    numRows,
+    minPerLine,
+    maxPerLine,
+    pitchMean: plan.mean,
+    pitchMin: plan.min,
+    pitchMax: plan.max,
+    pitch3dMean: d3.mean,
+    pitch3dMin: d3.min,
+    pitch3dMax: d3.max,
+    segmentCount
+  };
+}
+
+/** Estimated suspended mass per steel span (`lineID`): bulbs + gear + bulb cable + ethernet runs. */
+function computeSteelLineWeights(viz, sortedLineIds, coeff) {
+  const byLine = new Map();
+  for (let i = 0; i < viz.length; i++) {
+    const d = viz[i];
+    const lid = d.lineID;
+    if (!Number.isFinite(lid)) continue;
+    if (!byLine.has(lid)) byLine.set(lid, []);
+    byLine.get(lid).push(d);
+  }
+  const perBulbFixed =
+    coeff.plasticBulbG + coeff.indoorSocketG + coeff.dimmerG + coeff.dimmerHousingG;
+  const perLine = [];
+  let bestLid = NaN;
+  let bestG = -1;
+  let bestBulbs = 0;
+  let bestEthM = 0;
+  let bestEthNote = '';
+  for (let li = 0; li < sortedLineIds.length; li++) {
+    const lid = sortedLineIds[li];
+    const pts = byLine.get(lid);
+    if (!pts || pts.length === 0) continue;
+    const sorted = pts.slice().sort((a, b) => {
+      const ba = Number.isFinite(a.bulbonline) ? a.bulbonline : 0;
+      const bb = Number.isFinite(b.bulbonline) ? b.bulbonline : 0;
+      return ba - bb;
+    });
+    const n = sorted.length;
+    let bulbCableLenM = 0;
+    for (let j = 0; j < n; j++) {
+      const d = sorted[j];
+      bulbCableLenM += Number.isFinite(d.cable) ? Math.max(0, d.cable) : 0;
+    }
+    const gramsBulbGear = n * perBulbFixed;
+    const gramsBulbCable = bulbCableLenM * coeff.bulbCableGPerM;
+    const allExplicit = n > 0 && sorted.every(d => Number.isFinite(d.ethernetM) && d.ethernetM >= 0);
+    let ethM = 0;
+    let ethNote = '';
+    if (allExplicit) {
+      for (let j = 0; j < n; j++) ethM += Math.max(0, sorted[j].ethernetM);
+      ethNote = 'per-lamp lengths from CSV ethernet column';
+    } else {
+      // Chord length between consecutive hang points (CSV x,y,z), not arc length along OBJ catenary.
+      for (let j = 1; j < n; j++) {
+        const a = sorted[j - 1];
+        const b = sorted[j];
+        const dx = b.px - a.px;
+        const dy = b.py - a.py;
+        const dz = b.pz - a.pz;
+        ethM += Math.sqrt(dx * dx + dy * dy + dz * dz);
+      }
+      ethNote =
+        'Σ 3D hang-to-hang distance (chords between CSV positions; no ethernet length column in CSV)';
+    }
+    const gramsEthernet = ethM * coeff.ethernetGPerM;
+    const totalGrams = gramsBulbGear + gramsBulbCable + gramsEthernet;
+    perLine.push({
+      lineID: lid,
+      bulbCount: n,
+      bulbCableLenM,
+      ethernetLenM: ethM,
+      ethernetSource: ethNote,
+      gramsBulbGear,
+      gramsBulbCable,
+      gramsEthernet,
+      totalGrams
+    });
+    if (totalGrams > bestG) {
+      bestG = totalGrams;
+      bestLid = lid;
+      bestBulbs = n;
+      bestEthM = ethM;
+      bestEthNote = ethNote;
+    }
+  }
+  return {
+    heaviestLineId: bestLid,
+    heaviestGrams: bestG,
+    heaviestBulbs: bestBulbs,
+    heaviestEthM: bestEthM,
+    heaviestEthNote: bestEthNote,
+    perLine
+  };
+}
+
+function csvEscapeCell(val) {
+  const s = val === undefined || val === null ? '' : String(val);
+  if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function buildLineWeightsCsvBlob(stats, coeff, dataFile, cableKey) {
+  const head = [
+    'lineID',
+    'bulb_count',
+    'bulb_cable_total_m',
+    'ethernet_total_m',
+    'ethernet_how',
+    'g_plastic_socket_dimmer_g',
+    'g_bulb_cable_g',
+    'g_ethernet_cable_g',
+    'total_g',
+    'total_kg'
+  ];
+  const lines = [head.join(',')];
+  for (let i = 0; i < stats.perLine.length; i++) {
+    const r = stats.perLine[i];
+    const row = [
+      r.lineID,
+      r.bulbCount,
+      r.bulbCableLenM.toFixed(4),
+      r.ethernetLenM.toFixed(4),
+      csvEscapeCell(r.ethernetSource),
+      Math.round(r.gramsBulbGear),
+      Math.round(r.gramsBulbCable),
+      Math.round(r.gramsEthernet),
+      Math.round(r.totalGrams),
+      (r.totalGrams / 1000).toFixed(4)
+    ];
+    lines.push(row.join(','));
+  }
+  const meta = [
+    '# meta',
+    `# data_file,${csvEscapeCell(dataFile)}`,
+    `# cable_column,${csvEscapeCell(cableKey)}`,
+    `# coeff_plastic_bulb_g,${coeff.plasticBulbG}`,
+    `# coeff_indoor_socket_g,${coeff.indoorSocketG}`,
+    `# coeff_dimmer_g,${coeff.dimmerG}`,
+    `# coeff_dimmer_housing_g,${coeff.dimmerHousingG}`,
+    `# coeff_bulb_cable_g_per_m,${coeff.bulbCableGPerM}`,
+    `# coeff_ethernet_cable_g_per_m,${coeff.ethernetGPerM}`
+  ];
+  const body = lines.join('\r\n') + '\r\n' + meta.join('\r\n') + '\r\n';
+  return new Blob([body], { type: 'text/csv;charset=utf-8' });
+}
+
+const RIG_STATS = computeRigStats(VIZ, lineIDs);
+const LINE_WEIGHT_STATS = computeSteelLineWeights(VIZ, lineIDs, WEIGHT_COEFF);
+
+function exportLineWeightsCsv() {
+  const blob = buildLineWeightsCsvBlob(LINE_WEIGHT_STATS, WEIGHT_COEFF, DATA_FILE, CABLE_KEY);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:-]/g, '').replace('T', '_');
+  const base = String(DATA_FILE || 'rig').replace(/[^\w.-]+/g, '_');
+  a.href = url;
+  a.download = `line_weights_${base}_${stamp}.csv`;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function fillRigStatsPanel() {
+  const el = document.getElementById('rigStats');
+  if (!el) return;
+  const r = RIG_STATS;
+  const lw = LINE_WEIGHT_STATS;
+  const pitchBlock = Number.isFinite(r.pitchMean)
+    ? `<div>Mean: <b>${r.pitchMean.toFixed(3)} m</b> <span style="color:#666">(${r.segmentCount} segments)</span></div>
+       <div style="font-size:10px;color:#777;margin-top:2px">Per segment: min <b>${r.pitchMin.toFixed(3)}</b> · max <b>${r.pitchMax.toFixed(3)}</b> m</div>`
+    : `<div style="color:#666">—</div>`;
+  const pitch3dBlock = Number.isFinite(r.pitch3dMean)
+    ? `<div>Mean 3D spacing: <b>${r.pitch3dMean.toFixed(3)} m</b> <span style="color:#666">(${r.segmentCount} segments)</span></div>
+       <div style="font-size:10px;color:#777;margin-top:2px">Per segment: min <b>${r.pitch3dMin.toFixed(3)}</b> · max <b>${r.pitch3dMax.toFixed(3)}</b> m</div>`
+    : `<div style="color:#666">—</div>`;
+  const heavyBlock =
+    Number.isFinite(lw.heaviestLineId) && lw.heaviestGrams > 0
+      ? `<div style="margin-top:10px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px">Steel span load (estimate)</div>
+       <div style="font-size:10px;color:#666;margin:4px 0 6px">Bulbs + sockets + dimmers + bulb cable (<code>${CABLE_KEY}</code>). Ethernet: ${lw.heaviestEthNote}. Coefficients: <code>indoor-weights.csv</code>.</div>
+       <div>Heaviest <code>lineID</code>: <b>${lw.heaviestLineId}</b> · <b>${(lw.heaviestGrams / 1000).toFixed(2)} kg</b> <span style="color:#666">(${Math.round(lw.heaviestGrams)} g)</span></div>
+       <div style="font-size:10px;color:#777;margin-top:2px">${lw.heaviestBulbs} bulbs · Σ ethernet ≈ <b>${lw.heaviestEthM.toFixed(2)} m</b> on that span</div>`
+      : '';
+  el.innerHTML = `<div style="color:#888;text-transform:uppercase;font-size:10px;letter-spacing:1px;margin-bottom:8px">Rig summary</div>
+<div>Light bulbs (total): <b>${r.totalBulbs}</b></div>
+<div>Rows (<code>lineID</code>): <b>${r.numRows}</b></div>
+<div>Bulbs per line: min <b>${r.minPerLine}</b> · max <b>${r.maxPerLine}</b></div>
+${heavyBlock}
+<div style="margin-top:10px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px">Hang spacing — plan (ground-parallel)</div>
+<div style="font-size:10px;color:#666;margin:4px 0 6px"><code>√(Δx²+Δy²)</code> CSV between successive <code>bulbonline</code> per row.</div>
+${pitchBlock}
+<div style="margin-top:10px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px">Hang spacing — 3D</div>
+<div style="font-size:10px;color:#666;margin:4px 0 6px">Straight-line distance between hang points: <code>√(Δx²+Δy²+Δz²)</code> CSV (<code>position_x/y/z</code>).</div>
+${pitch3dBlock}`;
+}
+
+fillRigStatsPanel();
+document.getElementById('exportLineWeights')?.addEventListener('click', exportLineWeightsCsv);
+document.getElementById('exportUnrollPdf')?.addEventListener('click', () => {
+  exportUnrollPdf().catch(e => {
+    console.error(e);
+    showErr(String(e?.message || e));
+  });
+});
+
+/** Sorted bulbs per lineID (bulbonline order), for hover pitch vs neighbors. */
+const LINE_SORTED_BY_LINEID = new Map();
+for (let li = 0; li < lineIDs.length; li++) {
+  const lid = lineIDs[li];
+  LINE_SORTED_BY_LINEID.set(
+    lid,
+    VIZ.filter(d => d.lineID === lid).sort((a, b) => {
+      const ba = Number.isFinite(a.bulbonline) ? a.bulbonline : 0;
+      const bb = Number.isFinite(b.bulbonline) ? b.bulbonline : 0;
+      return ba - bb;
+    })
+  );
+}
+
+function rowNeighbors(d) {
+  const arr = LINE_SORTED_BY_LINEID.get(d.lineID);
+  if (!arr || arr.length === 0) return { prev: null, next: null };
+  let idx = -1;
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i] === d) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) return { prev: null, next: null };
+  return {
+    prev: idx > 0 ? arr[idx - 1] : null,
+    next: idx < arr.length - 1 ? arr[idx + 1] : null
+  };
+}
+
+function distPlanHang(a, b) {
+  return Math.hypot(b.px - a.px, b.py - a.py);
+}
+
+function dist3dHang(a, b) {
+  const dx = b.px - a.px;
+  const dy = b.py - a.py;
+  const dz = b.pz - a.pz;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+/** Same ethernet metres rule as weight export: CSV per lamp if complete column, else Σ 3D chords between hangs. */
+function lineEthernetTotalM(sorted) {
+  const n = sorted.length;
+  if (n === 0) return { ethM: 0, ethShort: '' };
+  const allExplicit = sorted.every(d => Number.isFinite(d.ethernetM) && d.ethernetM >= 0);
+  if (allExplicit) {
+    let ethM = 0;
+    for (let j = 0; j < n; j++) ethM += Math.max(0, sorted[j].ethernetM);
+    return { ethM, ethShort: 'CSV column' };
+  }
+  let ethM = 0;
+  for (let j = 1; j < n; j++) ethM += dist3dHang(sorted[j - 1], sorted[j]);
+  return { ethM, ethShort: 'Σ 3D hang chords' };
+}
+
+function spanFirstLast3d(sorted) {
+  if (sorted.length < 2) return 0;
+  return dist3dHang(sorted[0], sorted[sorted.length - 1]);
+}
+
+/** Tooltip: bulbonline as shown in CSV (compact). */
+function bulbonlineLabel(rec) {
+  if (!rec) return '—';
+  const b = rec.bulbonline;
+  if (!Number.isFinite(b)) return '?';
+  if (Math.abs(b - Math.round(b)) < 1e-6) return String(Math.round(b));
+  return b.toFixed(2);
+}
+
+/** One row: prev — planDist — curr — planDist — next (bulbonline order). */
+function formatPitchChainGraphic(prev, curr, next, distFn) {
+  const parts = [];
+  if (prev) {
+    parts.push(bulbonlineLabel(prev));
+    parts.push(`${distFn(prev, curr).toFixed(2)}m`);
+  }
+  parts.push(bulbonlineLabel(curr));
+  if (next) {
+    parts.push(`${distFn(curr, next).toFixed(2)}m`);
+    parts.push(bulbonlineLabel(next));
+  }
+  return parts.join(' - ');
+}
+
+const pxVals = VIZ.map(d => d.px);
+const pyVals = VIZ.map(d => d.py);
+const minPx = Math.min(...pxVals);
+const maxPx = Math.max(...pxVals);
+const minPy = Math.min(...pyVals);
+const maxPy = Math.max(...pyVals);
+const cxMid = (minPx + maxPx) / 2;
+const czMid = (minPy + maxPy) / 2;
+/** Boston-style: ceiling / plan reference at Y = 0 (data z = zMax). */
+const ceilingY = 0;
+const minSceneY = Math.min(...VIZ.map(d => d.syBulb), ...VIZ.map(d => d.syMount));
+let GIZMO_ARM_LEN = 0;
+
+function gizmoClassFromHeader(h) {
+  if (/AmI_0axis|_0axis_Indicator/i.test(h)) return 'O';
+  if (/_Xaxis_Indicator|_Xaxis_indicator/i.test(h)) return 'X';
+  if (/_Yaxis_Indicator|_Yaxis_indicator/i.test(h)) return 'Y';
+  if (/_Zaxis_Indicator|_Zaxis_indicator/i.test(h)) return 'Z';
+  return null;
+}
+function findGizmoRows() {
+  const by = { O: null, X: null, Y: null, Z: null };
+  for (const d of ALL) {
+    if (!d.isGizmo) continue;
+    for (const h of HEADERS) {
+      if (!/AmI/i.test(h) || !/axis/i.test(h) || !/indicator/i.test(h)) continue;
+      if (!isTrue(d._raw[h])) continue;
+      const k = gizmoClassFromHeader(h);
+      if (k === 'O' && !by.O) by.O = d;
+      else if (k === 'X' && !by.X) by.X = d;
+      else if (k === 'Y' && !by.Y) by.Y = d;
+      else if (k === 'Z' && !by.Z) by.Z = d;
+    }
+  }
+  return by;
+}
+function vScene(d) {
+  return new THREE.Vector3(d.sx, d.syMount, d.sz);
+}
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x0a0a0f);
+document.body.appendChild(renderer.domElement);
+
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.setSize(innerWidth, innerHeight);
+labelRenderer.domElement.style.position = 'fixed';
+labelRenderer.domElement.style.top = '0';
+labelRenderer.domElement.style.left = '0';
+labelRenderer.domElement.style.pointerEvents = 'none';
+document.body.appendChild(labelRenderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x0a0a0f, 0.008);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 500);
+camera.position.set(cxMid - 18, 10, czMid + 12);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.target.set(cxMid, (ceilingY + minSceneY) / 2, czMid);
+controls.update();
+
+function dropColor(c) {
+  const t = (c - dropMin) / (dropMax - dropMin || 1);
+  return new THREE.Color().setHSL(0.25 - t * 0.25, 0.95, 0.5);
+}
+function heightColor(pz) {
+  const t = (pz - zMin) / (zMax - zMin || 1);
+  return new THREE.Color().setHSL(0.55 - t * 0.45, 1.0, 0.55 + t * 0.1);
+}
+function hashHue(id, maxId) {
+  const t = maxId > 0 ? (id / (maxId + 1)) % 1 : 0.5;
+  return new THREE.Color().setHSL(t, 0.85, 0.55);
+}
+function lineIDColor(id) {
+  if (!Number.isFinite(id)) return new THREE.Color(0x888888);
+  return hashHue(id, maxLineID);
+}
+function universeColor(u) {
+  if (!Number.isFinite(u)) return new THREE.Color(0x888888);
+  return hashHue(u, maxUniv);
+}
+
+function pointColor(d, mode) {
+  if (mode === 'drop') return dropColor(d.cable);
+  if (mode === 'height') return heightColor(d.pz);
+  if (mode === 'lineID') return lineIDColor(d.lineID);
+  return universeColor(d.universe);
+}
+
+let colorMode = 'drop';
+let displayedRawIndex = [];
+
+function lineFilterSliderIdx() {
+  const el = document.getElementById('lineFilter');
+  if (!el) return -1;
+  const v = parseInt(el.value, 10);
+  return Number.isFinite(v) ? v : -1;
+}
+
+function syncLineFilterSliderBounds() {
+  const el = document.getElementById('lineFilter');
+  if (!el) return;
+  const hi = Math.max(-1, lineIDs.length - 1);
+  el.max = String(hi);
+  let cur = parseInt(el.value, 10);
+  if (!Number.isFinite(cur)) cur = -1;
+  el.value = String(Math.max(-1, Math.min(cur, hi)));
+}
+
+function updateLineFilterHint() {
+  const hint = document.getElementById('lineFilterHint');
+  if (!hint) return;
+  const idx = lineFilterSliderIdx();
+  if (idx < 0 || idx >= lineIDs.length) hint.textContent = 'all';
+  else hint.textContent = `lineID ${lineIDs[idx]} only`;
+}
+
+function updateLineFilterRowStats() {
+  const el = document.getElementById('lineFilterStats');
+  if (!el) return;
+  const idx = lineFilterSliderIdx();
+  if (idx < 0 || idx >= lineIDs.length) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  const lid = lineIDs[idx];
+  const sorted = LINE_SORTED_BY_LINEID.get(lid);
+  if (!sorted || sorted.length === 0) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  let bulbCableSum = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    const d = sorted[i];
+    bulbCableSum += Number.isFinite(d.cable) ? Math.max(0, d.cable) : 0;
+  }
+  const { ethM, ethShort } = lineEthernetTotalM(sorted);
+  const chordFirstLast = spanFirstLast3d(sorted);
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  const pathNote =
+    ethShort === 'CSV column' ? '(Σ CSV ethernet lengths)' : '(Σ 3D hops along hang order)';
+  el.style.display = 'block';
+  el.innerHTML = `<div style="color:#8ab;margin-bottom:5px"><code>lineID</code> <b>${lid}</b> · bulb-on-line <b>${bulbonlineLabel(first)}</b> → <b>${bulbonlineLabel(last)}</b></div>
+<div>Bulbs: <b>${sorted.length}</b></div>
+<div>Σ bulb cable: <b>${bulbCableSum.toFixed(3)} m</b></div>
+<div>Along-row path: <b>${ethM.toFixed(3)} m</b> <span style="color:#666">${pathNote}</span></div>
+<div>Straight chord first→last: <b>${chordFirstLast.toFixed(3)} m</b> <span style="color:#666">(3D, endpoints only)</span></div>`;
+}
+
+const ptGeo = new THREE.BufferGeometry();
+const ptMat = new THREE.PointsMaterial({
+  size: parseFloat(document.getElementById('ptSize').value) * 0.02,
+  vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 1.0
+});
+const pointCloud = new THREE.Points(ptGeo, ptMat);
+scene.add(pointCloud);
+
+const lineGeo = new THREE.BufferGeometry();
+const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.5 });
+const dropLines = new THREE.LineSegments(lineGeo, lineMat);
+scene.add(dropLines);
+
+const catenaryGroup = new THREE.Group();
+catenaryGroup.name = 'steelCatenary';
+scene.add(catenaryGroup);
+
+const dimmerGroup = new THREE.Group();
+dimmerGroup.name = 'dimmerAlongCurve';
+scene.add(dimmerGroup);
+
+const curveMidpointsGroup = new THREE.Group();
+curveMidpointsGroup.name = 'curveArcMidpoints';
+scene.add(curveMidpointsGroup);
+
+const DIMMER_LEN_M = 0.05;
+const dimmerStickGeo = new THREE.CylinderGeometry(0.008, 0.008, DIMMER_LEN_M, 8);
+const dimmerStickMat = new THREE.MeshBasicMaterial({
+  color: 0xff44aa,
+  transparent: true,
+  opacity: 0.95,
+  depthTest: false
+});
+const dimmerStickMatPast = new THREE.MeshBasicMaterial({
+  color: 0xffaa44,
+  transparent: true,
+  opacity: 0.95,
+  depthTest: false
+});
+const curveCenterSphereGeo = new THREE.SphereGeometry(0.035, 14, 14);
+const curveCenterMat = new THREE.MeshBasicMaterial({
+  color: 0x44ddff,
+  transparent: true,
+  opacity: 0.95,
+  depthTest: false
+});
+const dimmerUpRef = new THREE.Vector3(0, 1, 0);
+
+function polylineMountsScene(sorted) {
+  const pts = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const d = sorted[i];
+    pts.push(new THREE.Vector3(d.sx, d.syMount, d.sz));
+  }
+  return pts;
+}
+
+function cumulativeArcLen(pts) {
+  const n = pts.length;
+  const cum = new Float32Array(n);
+  cum[0] = 0;
+  for (let i = 1; i < n; i++) cum[i] = cum[i - 1] + pts[i].distanceTo(pts[i - 1]);
+  return cum;
+}
+
+function pointAndTangentAtS(pts, cum, sM) {
+  const n = pts.length;
+  const total = cum[n - 1];
+  const s = Math.max(0, Math.min(sM, total));
+  const upFb = new THREE.Vector3(0, 1, 0);
+  if (n < 2) return { p: pts[0].clone(), tangent: upFb.clone() };
+  if (s <= 0) {
+    const tang = pts[1].clone().sub(pts[0]);
+    if (tang.lengthSq() < 1e-18) return { p: pts[0].clone(), tangent: upFb.clone() };
+    tang.normalize();
+    return { p: pts[0].clone(), tangent: tang };
+  }
+  if (s >= total - 1e-12) {
+    const tang = pts[n - 1].clone().sub(pts[n - 2]);
+    if (tang.lengthSq() < 1e-18) return { p: pts[n - 1].clone(), tangent: upFb.clone() };
+    tang.normalize();
+    return { p: pts[n - 1].clone(), tangent: tang };
+  }
+  let i = 1;
+  while (i < n && cum[i] < s) i++;
+  const i0 = i - 1;
+  const segLen = cum[i] - cum[i0];
+  const u = segLen > 1e-12 ? (s - cum[i0]) / segLen : 0;
+  const p = new THREE.Vector3().lerpVectors(pts[i0], pts[i], u);
+  const tang = pts[i].clone().sub(pts[i0]);
+  if (tang.lengthSq() < 1e-18) return { p, tangent: upFb.clone() };
+  tang.normalize();
+  return { p, tangent: tang };
+}
+
+function rebuildAllCurveMidpoints() {
+  while (curveMidpointsGroup.children.length > 0) {
+    curveMidpointsGroup.remove(curveMidpointsGroup.children[0]);
+  }
+  curveMidpointsGroup.visible = true;
+  curveMidpointsGroup.renderOrder = 42;
+  for (let li = 0; li < lineIDs.length; li++) {
+    const lid = lineIDs[li];
+    const sorted = LINE_SORTED_BY_LINEID.get(lid);
+    if (!sorted || sorted.length < 2) continue;
+    const pts = polylineMountsScene(sorted);
+    const cum = cumulativeArcLen(pts);
+    const coreLen = cum[cum.length - 1];
+    if (coreLen < 1e-9) continue;
+    const midPos = pointAndTangentAtS(pts, cum, coreLen * 0.5).p;
+    const m = new THREE.Mesh(curveCenterSphereGeo, curveCenterMat);
+    m.position.copy(midPos);
+    m.renderOrder = 42;
+    curveMidpointsGroup.add(m);
+  }
+}
+
+function escapeSvgText(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatLenM(m) {
+  if (!Number.isFinite(m)) return '—';
+  return `${m.toFixed(3)}m`;
+}
+
+let viewMode3d = true;
+
+function setViewMode3d(on) {
+  viewMode3d = on;
+  document.body.classList.toggle('mode-2d', !on);
+  const v2 = document.getElementById('view2d');
+  if (v2) {
+    v2.classList.toggle('active', !on);
+    v2.setAttribute('aria-hidden', on ? 'true' : 'false');
+  }
+  renderer.domElement.style.visibility = on ? 'visible' : 'hidden';
+  renderer.domElement.style.pointerEvents = on ? 'auto' : 'none';
+  labelRenderer.domElement.style.visibility = on ? 'visible' : 'hidden';
+  controls.enabled = on;
+  const btn = document.getElementById('toggleView2d');
+  if (btn) btn.textContent = on ? '2D cable unroll' : 'Back to 3D';
+  if (!on) rebuildUnrollSvg();
+}
+
+/** opts.witnessTopHi · opts.labelFontSize · opts.labelRotateDeg (e.g. -90 for PDF segment dims). */
+function svgHorizDim(x1, x2, yDim, yWitnessFrom, label, minPxLabel = 20, opts) {
+  const lo = Math.min(x1, x2);
+  const hi = Math.max(x1, x2);
+  const mid = (lo + hi) / 2;
+  const w = hi - lo;
+  const showLabel = w >= minPxLabel;
+  const witnessHiTop =
+    opts && Number.isFinite(opts.witnessTopHi) ? opts.witnessTopHi : yWitnessFrom;
+  const labelFs = opts && Number.isFinite(opts.labelFontSize) ? opts.labelFontSize : 10.5;
+  const labelRot = opts && Number.isFinite(opts.labelRotateDeg) ? opts.labelRotateDeg : null;
+  const gapAboveLine = 3;
+  let labelY = yDim - Math.max(2.5, labelFs * 0.48);
+  let rotCx = mid;
+  let rotCy = yDim;
+  if (labelRot != null) {
+    const approxRun = Math.max(String(label).length, 4) * labelFs * 0.56;
+    const halfRun = approxRun / 2;
+    rotCy = yDim - halfRun - gapAboveLine;
+    labelY = rotCy;
+  }
+  const aw = 4;
+  const hh = aw * 0.5;
+  let g = '';
+  if (w > aw * 2 + 1e-6) {
+    g += `<line x1="${lo + aw}" y1="${yDim}" x2="${hi - aw}" y2="${yDim}" stroke="#111" stroke-width="0.9"/>`;
+    g += `<polygon points="${lo},${yDim} ${lo + aw},${yDim - hh} ${lo + aw},${yDim + hh}" fill="#111"/>`;
+    g += `<polygon points="${hi},${yDim} ${hi - aw},${yDim - hh} ${hi - aw},${yDim + hh}" fill="#111"/>`;
+  } else if (w > 1e-6) {
+    g += `<line x1="${lo}" y1="${yDim}" x2="${hi}" y2="${yDim}" stroke="#111" stroke-width="0.9"/>`;
+  }
+  if (showLabel) {
+    const rotAttr =
+      labelRot != null ? ` transform="rotate(${labelRot} ${rotCx} ${rotCy})"` : '';
+    const baseAttr =
+      labelRot != null ? ` dominant-baseline="central"` : '';
+    g += `<text x="${mid}" y="${labelY}" text-anchor="middle"${baseAttr} fill="#111" font-size="${labelFs}" font-family="Courier New, monospace"${rotAttr}>${escapeSvgText(label)}</text>`;
+  }
+  g += `<line x1="${lo}" y1="${yWitnessFrom}" x2="${lo}" y2="${yDim}" stroke="#777" stroke-width="0.85" stroke-dasharray="5 4"/>`;
+  g += `<line x1="${hi}" y1="${witnessHiTop}" x2="${hi}" y2="${yDim}" stroke="#777" stroke-width="0.85" stroke-dasharray="5 4"/>`;
+  return g;
+}
+
+function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
+  const svg = document.getElementById('unrollSvg');
+  if (!svg || (viewMode3d && !forceRebuild)) return;
+  if (includeStackedAbsolute === undefined) includeStackedAbsolute = false;
+  opts = opts || {};
+  const forPdf = !!opts.forPdf;
+
+  let ids;
+  if (Number.isFinite(opts.singleLineId)) {
+    ids = [opts.singleLineId];
+  } else {
+    const filt = lineFilterSliderIdx();
+    ids = filt >= 0 && filt < lineIDs.length ? [lineIDs[filt]] : lineIDs.slice();
+  }
+
+  const spacingM = parseFloat(document.getElementById('dimmerSpacingCm')?.value ?? '32') / 100;
+  const startArc = parseFloat(document.getElementById('dimmerStartOffsetCm')?.value ?? '0') / 100;
+
+  const baseMarginL = 104;
+  const baseMarginR = 52;
+  const serverSidePad = 54;
+  const W = Number.isFinite(opts.svgWidth)
+    ? Math.max(720, Math.min(2200, opts.svgWidth))
+    : Math.max(720, Math.min(1600, innerWidth - 32));
+
+  const rowLabX = 10;
+  const rowLabStyle =
+    'fill="#2266cc" font-size="9.5" font-family="Courier New, monospace" font-weight="600"';
+
+  let originNoteBl = null;
+  for (let oi = 0; oi < ids.length; oi++) {
+    const s0 = LINE_SORTED_BY_LINEID.get(ids[oi]);
+    if (s0 && s0.length >= 2) {
+      originNoteBl = s0[0];
+      break;
+    }
+  }
+  const legendY0 = 8;
+  const legRowH = 16;
+  const legYTop = forPdf ? legendY0 + 36 : legendY0 + 6;
+  const legX = forPdf ? 10 : W - 215;
+  const legTextX = legX + (forPdf ? 118 : 48);
+  const svgOriginNote = originNoteBl
+    ? `<text x="10" y="${legendY0 + 20}" fill="#333" font-size="10" font-family="Courier New, monospace">0 = curve origin (first hang / gimbal side · bulb-on-line ${escapeSvgText(
+        bulbonlineLabel(originNoteBl)
+      )})</text>`
+    : '';
+  const legMid = r => legYTop + r * legRowH + legRowH / 2;
+  const legTy = r => legMid(r) + 3.5;
+  const svgLegend = `<g stroke-linecap="square">
+    <line x1="${legX}" y1="${legMid(0)}" x2="${legX + 18}" y2="${legMid(0)}" stroke="#085" stroke-width="2"/>
+    <text x="${legTextX}" y="${legTy(0)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">bulb cable joint</text>
+    <circle cx="${legX + 9}" cy="${legMid(1)}" r="4" fill="none" stroke="#b06" stroke-width="1.4"/>
+    <text x="${legTextX}" y="${legTy(1)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">dimmer centre</text>
+    <line x1="${legX}" y1="${legMid(2) + 5}" x2="${legX + 14}" y2="${legMid(2) - 5}" stroke="#557" stroke-width="0.85"/>
+    <text x="${legTextX}" y="${legTy(2)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">${forPdf ? 'joint-dimmer link' : 'joint↔dimmer link'}</text>
+    <line x1="${legX}" y1="${legMid(3)}" x2="${legX + 22}" y2="${legMid(3)}" stroke="#111" stroke-width="5"/>
+    <line x1="${legX + 22}" y1="${legMid(3)}" x2="${legX + 42}" y2="${legMid(3)}" stroke="#a0522d" stroke-width="4" stroke-dasharray="8 5"/>
+    <text x="${legTextX}" y="${legTy(3)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">hangs · extension</text>
+  </g>`;
+
+  let yCursor = legYTop + 4 * legRowH + 14;
+  let allG = '';
+
+  for (let si = 0; si < ids.length; si++) {
+    const lid = ids[si];
+    const sorted = LINE_SORTED_BY_LINEID.get(lid);
+    if (!sorted || sorted.length < 2) continue;
+
+    const pts = polylineMountsScene(sorted);
+    const cum = cumulativeArcLen(pts);
+    const coreLen = cum[cum.length - 1];
+    if (coreLen < 1e-9) continue;
+
+    const nBulbs = sorted.length;
+    const startA = Number.isFinite(startArc) ? Math.max(0, startArc) : 0;
+    const lastDimmerS = startA + (nBulbs - 1) * spacingM;
+    const barEnd = Math.max(coreLen, lastDimmerS);
+
+    const dSrvFirst = Math.hypot(
+      sorted[0].px - SERVER_ROOM_CSV.px,
+      sorted[0].py - SERVER_ROOM_CSV.py
+    );
+    const dSrvLast = Math.hypot(
+      sorted[nBulbs - 1].px - SERVER_ROOM_CSV.px,
+      sorted[nBulbs - 1].py - SERVER_ROOM_CSV.py
+    );
+    const serverTowardCurveEnd = dSrvLast + 1e-6 < dSrvFirst;
+
+    let marginL = baseMarginL;
+    let marginR = baseMarginR;
+    if (serverTowardCurveEnd) marginR += serverSidePad;
+    else marginL += serverSidePad;
+
+    const innerW = W - marginL - marginR;
+    const scale = innerW / Math.max(barEnd, 1e-6);
+
+    const xAt = s => marginL + Math.min(Math.max(0, s), barEnd) * scale;
+
+    const yTitle = yCursor;
+    const yBar = yCursor + 36;
+    const yWitnessFrom = yBar + 14;
+    const yDimDimmer = yWitnessFrom + 40;
+    const yWitnessBulb = yDimDimmer + 18;
+    const yDimBulb = yWitnessBulb + 38;
+    const yWitnessTot = yDimBulb + 8;
+    const yDimTotal = yWitnessTot + 26;
+
+    const firstBl = sorted[0];
+    const lastBl = sorted[sorted.length - 1];
+    const title = forPdf
+      ? `lineID ${lid} · bulb-on-line ${bulbonlineLabel(firstBl)}-${bulbonlineLabel(lastBl)} · ${nBulbs} hangs`
+      : `lineID ${lid} · bulb-on-line ${bulbonlineLabel(firstBl)}→${bulbonlineLabel(lastBl)} · ${nBulbs} hangs`;
+
+    let g = `<g>`;
+    g += `<text x="${marginL}" y="${yTitle}" fill="#1a1a1a" font-size="13" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(title)}</text>`;
+    g += `<text x="${marginL}" y="${yBar - 8}" fill="#444" font-size="10" font-family="Courier New, monospace">${
+      forPdf
+        ? 'developed length along hang curve (arc metres to horizontal)'
+        : 'developed length along hang curve (arc metres → horizontal)'
+    }</text>`;
+    g += `<text x="${rowLabX}" y="${yBar + 5}" ${rowLabStyle}>lineID ${lid}</text>`;
+
+    g += `<line x1="${xAt(0)}" y1="${yBar}" x2="${xAt(coreLen)}" y2="${yBar}" stroke="#111" stroke-width="6" stroke-linecap="butt"/>`;
+
+    const dimS = [];
+    for (let k = 0; k < nBulbs; k++) dimS.push(startA + k * spacingM);
+
+    g += `<g opacity="0.65" stroke="#557" stroke-width="0.85" fill="none">`;
+    for (let k = 0; k < nBulbs; k++) {
+      const sD = dimS[k];
+      if (sD < -1e-6 || sD > barEnd + 1e-6) continue;
+      const xb = xAt(cum[k]);
+      const xd = xAt(sD);
+      g += `<line x1="${xb}" y1="${yBar - 20}" x2="${xd}" y2="${yBar - 7}"/>`;
+    }
+    g += `</g>`;
+
+    for (let i = 0; i < nBulbs; i++) {
+      const x = xAt(cum[i]);
+      const idLab = bulbonlineLabel(sorted[i]);
+      g += `<line x1="${x}" y1="${yBar - 22}" x2="${x}" y2="${yBar + 14}" stroke="#085" stroke-width="2.2"/>`;
+      g += `<text x="${x}" y="${yBar - 26}" text-anchor="middle" fill="#042" font-size="9.5" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(idLab)}</text>`;
+    }
+
+    for (let k = 0; k < dimS.length; k++) {
+      const s = dimS[k];
+      if (s < -1e-6 || s > barEnd + 1e-6) continue;
+      const x = xAt(s);
+      g += `<line x1="${x}" y1="${yBar - 9}" x2="${x}" y2="${yBar + 9}" stroke="#b06" stroke-width="2"/>`;
+      g += `<circle cx="${x}" cy="${yBar}" r="4" fill="none" stroke="#b06" stroke-width="1.4"/>`;
+    }
+
+    if (barEnd > coreLen + 1e-6) {
+      g += `<path d="M ${xAt(coreLen)} ${yBar} L ${xAt(barEnd)} ${yBar}" stroke="#a0522d" stroke-width="5" fill="none" stroke-dasharray="12 7" stroke-linecap="round" stroke-linejoin="round"/>`;
+    }
+
+    const pdfSegDimOpts = forPdf ? { labelRotateDeg: -90 } : undefined;
+    g += `<text x="${rowLabX}" y="${yDimDimmer - 6}" ${rowLabStyle}>dimmer to dimmer</text>`;
+    for (let k = 1; k < dimS.length; k++) {
+      const dlen = dimS[k] - dimS[k - 1];
+      g += svgHorizDim(xAt(dimS[k - 1]), xAt(dimS[k]), yDimDimmer, yWitnessFrom, formatLenM(dlen), 20, pdfSegDimOpts);
+    }
+
+    g += `<text x="${rowLabX}" y="${yDimBulb - 6}" ${rowLabStyle}>bulb to bulb</text>`;
+    for (let i = 1; i < nBulbs; i++) {
+      const dlen = cum[i] - cum[i - 1];
+      g += svgHorizDim(xAt(cum[i - 1]), xAt(cum[i]), yDimBulb, yWitnessBulb, formatLenM(dlen), 20, pdfSegDimOpts);
+    }
+
+    let yCursorAfterRow;
+    if (includeStackedAbsolute) {
+      const absDimDepth = 20;
+      const absRowGap = 5;
+      let yAbsWitness = yDimBulb + 14;
+      const absBlockTop = yAbsWitness;
+      let lastAbsDimY = yAbsWitness + absDimDepth;
+      for (let i = 1; i < nBulbs; i++) {
+        const yAbsDim = yAbsWitness + absDimDepth;
+        const idLab = bulbonlineLabel(sorted[i]);
+        const absDimLabel = forPdf
+          ? `0-${idLab} ${formatLenM(cum[i])}`
+          : `0→${idLab} ${formatLenM(cum[i])}`;
+        g += svgHorizDim(xAt(0), xAt(cum[i]), yAbsDim, yAbsWitness, absDimLabel, 20, {
+          witnessTopHi: yWitnessBulb
+        });
+        lastAbsDimY = yAbsDim;
+        yAbsWitness = yAbsDim + absRowGap;
+      }
+      if (barEnd > coreLen + 1e-6) {
+        const yAbsDim = yAbsWitness + absDimDepth;
+        g += svgHorizDim(xAt(0), xAt(barEnd), yAbsDim, yAbsWitness, `S=${formatLenM(barEnd)} incl. ext`, 48, {
+          witnessTopHi: yWitnessBulb
+        });
+        lastAbsDimY = yAbsDim;
+        yAbsWitness = yAbsDim + absRowGap;
+      }
+      const absLabelY = absBlockTop + (lastAbsDimY - absBlockTop) * 0.52 + 3;
+      g += `<text x="${rowLabX}" y="${absLabelY}" ${rowLabStyle}>absolute</text>`;
+      yCursorAfterRow = yAbsWitness + 16;
+    } else {
+      g += svgHorizDim(xAt(0), xAt(barEnd), yDimTotal, yWitnessTot, `S=${formatLenM(barEnd)}`, 48, {
+        witnessTopHi: yWitnessBulb
+      });
+      yCursorAfterRow = yDimTotal + 24;
+    }
+
+    if (serverTowardCurveEnd) {
+      g += `<text x="${marginL + innerW + 8}" y="${yBar + 5}" fill="#556" font-size="12" font-family="Courier New, monospace" font-style="italic">server</text>`;
+    } else {
+      g += `<text x="${marginL - 8}" y="${yBar + 5}" text-anchor="end" fill="#556" font-size="12" font-family="Courier New, monospace" font-style="italic">server</text>`;
+    }
+
+    g += `</g>`;
+    allG += g;
+    yCursor = yCursorAfterRow;
+  }
+
+  if (!allG) {
+    svg.innerHTML = `<text x="76" y="52" fill="#222" font-size="14" font-family="Courier New, monospace">No row with ≥2 hangs.</text>`;
+    svg.setAttribute('width', W);
+    svg.setAttribute('height', 130);
+    svg.setAttribute('viewBox', `0 0 ${W} 130`);
+    svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+    return;
+  }
+
+  const svgH = yCursor + 28;
+  svg.setAttribute('width', W);
+  svg.setAttribute('height', svgH);
+  svg.setAttribute('viewBox', `0 0 ${W} ${svgH}`);
+  svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+  svg.innerHTML = svgOriginNote + svgLegend + allG;
+}
+
+async function exportUnrollPdf() {
+  let jsPDF;
+  let svg2pdf;
+  try {
+    ({ jsPDF } = await import('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm'));
+    ({ svg2pdf } = await import('https://cdn.jsdelivr.net/npm/svg2pdf.js@2.2.4/+esm'));
+  } catch (e) {
+    throw new Error(`Could not load PDF libraries (${e?.message || e}). Check network / offline.`);
+  }
+  if (typeof svg2pdf !== 'function') {
+    throw new Error('svg2pdf export is not available in this build.');
+  }
+
+  const idsToExport = lineIDs.filter(lid => {
+    const s = LINE_SORTED_BY_LINEID.get(lid);
+    return s && s.length >= 2;
+  });
+  if (!idsToExport.length) {
+    showErr('No lineID with ≥2 hangs to export.');
+    return;
+  }
+
+  const pdfW = 960;
+  const doc = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' });
+  const margin = 14;
+  const scaleInset = 0.97;
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:-]/g, '').replace('T', '_');
+  const base = String(DATA_FILE || 'rig').replace(/[^\w.-]+/g, '_');
+
+  try {
+    for (let pi = 0; pi < idsToExport.length; pi++) {
+      if (pi > 0) doc.addPage('a4', 'portrait');
+      rebuildUnrollSvg(true, true, { singleLineId: idsToExport[pi], svgWidth: pdfW, forPdf: true });
+      const svg = document.getElementById('unrollSvg');
+      if (!svg) continue;
+      const sw = parseFloat(svg.getAttribute('width')) || pdfW;
+      const sh = parseFloat(svg.getAttribute('height')) || 400;
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
+      const innerW = pageW - 2 * margin;
+      const innerH = pageH - 2 * margin;
+      let scale = Math.min(innerW / sw, innerH / sh) * scaleInset;
+      let drawW = sw * scale;
+      let drawH = sh * scale;
+      const squeeze = Math.min(1, innerW / drawW, innerH / drawH);
+      drawW *= squeeze;
+      drawH *= squeeze;
+      const ox = margin + (innerW - drawW) / 2;
+      const oy = margin + (innerH - drawH) / 2;
+      await svg2pdf(svg, doc, { x: ox, y: oy, width: drawW, height: drawH });
+    }
+    doc.save(`cable_unroll_${base}_${stamp}.pdf`);
+  } finally {
+    rebuildUnrollSvg(true, false);
+  }
+}
+
+function updateDimmerSliderHints() {
+  const spEl = document.getElementById('dimmerSpacingCm');
+  const offEl = document.getElementById('dimmerStartOffsetCm');
+  const sh = document.getElementById('dimmerSpacingHint');
+  const oh = document.getElementById('dimmerOffsetHint');
+  const eh = document.getElementById('dimmerEthCableHint');
+  if (sh && spEl) sh.textContent = spEl.value;
+  if (oh && offEl) oh.textContent = offEl.value;
+  if (eh && spEl) {
+    const cableCm = Math.max(0, parseFloat(spEl.value) - 5);
+    eh.textContent = Number.isFinite(cableCm) ? cableCm.toFixed(1) : '—';
+  }
+}
+
+function rebuildDimmerMarkers() {
+  const hintEl = document.getElementById('dimmerCountHint');
+  for (let i = dimmerGroup.children.length - 1; i >= 0; i--) {
+    const o = dimmerGroup.children[i];
+    dimmerGroup.remove(o);
+    if (o.isLine) {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    }
+  }
+  const idx = lineFilterSliderIdx();
+  if (idx < 0 || idx >= lineIDs.length) {
+    dimmerGroup.visible = false;
+    if (hintEl) {
+      hintEl.style.display = 'none';
+      hintEl.textContent = '';
+    }
+    return;
+  }
+  const sorted = LINE_SORTED_BY_LINEID.get(lineIDs[idx]);
+  if (!sorted || sorted.length < 2) {
+    dimmerGroup.visible = false;
+    if (hintEl) {
+      hintEl.style.display = 'none';
+      hintEl.textContent = '';
+    }
+    return;
+  }
+  const pts = polylineMountsScene(sorted);
+  const cumCore = cumulativeArcLen(pts);
+  const coreLen = cumCore[cumCore.length - 1];
+  const spacingM = parseFloat(document.getElementById('dimmerSpacingCm').value) / 100;
+  const startM = parseFloat(document.getElementById('dimmerStartOffsetCm').value) / 100;
+  if (!Number.isFinite(spacingM) || spacingM < 0.005) {
+    dimmerGroup.visible = false;
+    if (hintEl) {
+      hintEl.style.display = 'none';
+      hintEl.textContent = '';
+    }
+    return;
+  }
+  dimmerGroup.visible = true;
+  dimmerGroup.renderOrder = 40;
+
+  const n = pts.length;
+  const nBulbs = sorted.length;
+  const startArc = Number.isFinite(startM) ? Math.max(0, startM) : 0;
+  const lastDimmerS = startArc + (nBulbs - 1) * spacingM;
+  const needsExtension = lastDimmerS > coreLen + 1e-8;
+
+  const extDir = pts[n - 1].clone().sub(pts[n - 2]);
+  if (extDir.lengthSq() < 1e-18) extDir.set(0, 1, 0);
+  else extDir.normalize();
+
+  let ptsExt;
+  let cumExt;
+  let extendM = 0;
+  let extTip = null;
+  if (needsExtension) {
+    extendM = Math.max(lastDimmerS - coreLen + spacingM * 4, 0.35);
+    extTip = pts[n - 1].clone().addScaledVector(extDir, extendM);
+    ptsExt = pts.concat([extTip]);
+    cumExt = cumulativeArcLen(ptsExt);
+  } else {
+    ptsExt = pts;
+    cumExt = cumCore;
+  }
+
+  const lineMatCore = new THREE.LineBasicMaterial({
+    color: 0xff44aa,
+    transparent: true,
+    opacity: 0.38,
+    depthTest: false
+  });
+  lineMatCore.depthWrite = false;
+  const lineMatExt = new THREE.LineBasicMaterial({
+    color: 0xffcc66,
+    transparent: true,
+    opacity: 0.52,
+    depthTest: false
+  });
+  lineMatExt.depthWrite = false;
+
+  const coreLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMatCore);
+  coreLine.renderOrder = 40;
+  dimmerGroup.add(coreLine);
+  if (needsExtension && extTip) {
+    const extSeg = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([pts[n - 1], extTip]),
+      lineMatExt
+    );
+    extSeg.renderOrder = 40;
+    dimmerGroup.add(extSeg);
+  }
+
+  let onCore = 0;
+  let pastEnd = 0;
+  for (let k = 0; k < nBulbs; k++) {
+    const s = startArc + k * spacingM;
+    const { p, tangent } = pointAndTangentAtS(ptsExt, cumExt, s);
+    const past = s > coreLen + 1e-8;
+    const mesh = new THREE.Mesh(dimmerStickGeo, past ? dimmerStickMatPast : dimmerStickMat);
+    mesh.quaternion.setFromUnitVectors(dimmerUpRef, tangent);
+    mesh.position.copy(p);
+    mesh.renderOrder = 41;
+    dimmerGroup.add(mesh);
+    if (past) pastEnd++;
+    else onCore++;
+  }
+
+  if (hintEl) {
+    hintEl.style.display = 'block';
+    const extNote = needsExtension
+      ? ` · <span style="color:#888">extension ${extendM.toFixed(2)} m</span>`
+      : ` · <span style="color:#888">no extension drawn</span>`;
+    const pastPhrase =
+      pastEnd === 0
+        ? 'all on hang polyline'
+        : `<span style="color:#fc8"><b>${pastEnd}</b> past last hang</span> · ${onCore} on polyline`;
+    hintEl.innerHTML = `<b>${nBulbs}</b> dimmer(s) (one per bulb) · ${pastPhrase}${extNote}`;
+  }
+}
+
+function rebuildVisibleGeometry() {
+  const filt = lineFilterSliderIdx();
+  let vis;
+  if (filt < 0 || filt >= lineIDs.length) {
+    vis = VIZ.map((_, i) => i);
+  } else {
+    const lid = lineIDs[filt];
+    vis = [];
+    for (let i = 0; i < VIZ.length; i++) {
+      if (VIZ[i].lineID === lid) vis.push(i);
+    }
+  }
+  displayedRawIndex = vis;
+  const n = vis.length;
+
+  const pos = new Float32Array(Math.max(1, n) * 3);
+  const col = new Float32Array(Math.max(1, n) * 3);
+  const linePos = new Float32Array(Math.max(1, n) * 6);
+  const lineCol = new Float32Array(Math.max(1, n) * 6);
+
+  for (let j = 0; j < n; j++) {
+    const d = VIZ[vis[j]];
+    const bx = d.sx;
+    const by = d.syBulb;
+    const bz = d.sz;
+    const my = d.syMount;
+
+    pos[j * 3] = bx;
+    pos[j * 3 + 1] = by;
+    pos[j * 3 + 2] = bz;
+
+    const c = pointColor(d, colorMode);
+    col[j * 3] = c.r;
+    col[j * 3 + 1] = c.g;
+    col[j * 3 + 2] = c.b;
+
+    linePos[j * 6] = bx;
+    linePos[j * 6 + 1] = my;
+    linePos[j * 6 + 2] = bz;
+    linePos[j * 6 + 3] = bx;
+    linePos[j * 6 + 4] = by;
+    linePos[j * 6 + 5] = bz;
+    lineCol[j * 6] = c.r * 0.4;
+    lineCol[j * 6 + 1] = c.g * 0.4;
+    lineCol[j * 6 + 2] = c.b * 0.4;
+    lineCol[j * 6 + 3] = c.r;
+    lineCol[j * 6 + 4] = c.g;
+    lineCol[j * 6 + 5] = c.b;
+  }
+
+  const pVert = n === 0 ? 1 : n;
+  if (n === 0) {
+    pos[0] = 0;
+    pos[1] = 0;
+    pos[2] = 0;
+    col[0] = 0;
+    col[1] = 0;
+    col[2] = 0;
+    linePos.fill(0);
+    lineCol.fill(0);
+  }
+
+  ptGeo.deleteAttribute('position');
+  ptGeo.deleteAttribute('color');
+  ptGeo.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, pVert * 3), 3));
+  ptGeo.setAttribute('color', new THREE.BufferAttribute(col.subarray(0, pVert * 3), 3));
+
+  lineGeo.deleteAttribute('position');
+  lineGeo.deleteAttribute('color');
+  lineGeo.setAttribute('position', new THREE.BufferAttribute(linePos.subarray(0, pVert * 6), 3));
+  lineGeo.setAttribute('color', new THREE.BufferAttribute(lineCol.subarray(0, pVert * 6), 3));
+
+  pointCloud.visible = n > 0;
+  dropLines.visible = n > 0;
+}
+
+function mirrorPlanX(x) {
+  return minPx + maxPx - x;
+}
+
+const gizmoRows = findGizmoRows();
+const floorGridY = gizmoRows.O != null ? gizmoRows.O.syMount : minSceneY - 0.5;
+
+// Ceiling reference at Y = 0 (Boston: ceiling y = 0); plan uses mirrored X like Boston room outline
+const ceilW = Math.abs(maxPx - minPx) + 1.0;
+const ceilD = Math.abs(maxPy - minPy) + 1.0;
+const ceilGeo = new THREE.PlaneGeometry(ceilW, ceilD);
+const ceilMat = new THREE.MeshBasicMaterial({ color: 0x111122, transparent: true, opacity: 0.25, side: THREE.DoubleSide });
+const ceiling = new THREE.Mesh(ceilGeo, ceilMat);
+ceiling.rotation.x = Math.PI / 2;
+ceiling.position.set(cxMid, ceilingY, czMid);
+scene.add(ceiling);
+
+const gridHelper = new THREE.GridHelper(Math.max(ceilW, ceilD), 20, 0x223344, 0x112233);
+gridHelper.position.set(cxMid, floorGridY, czMid);
+scene.add(gridHelper);
+
+const roomPts = [
+  new THREE.Vector3(mirrorPlanX(minPx - 0.15), ceilingY, minPy - 0.15),
+  new THREE.Vector3(mirrorPlanX(maxPx + 0.15), ceilingY, minPy - 0.15),
+  new THREE.Vector3(mirrorPlanX(maxPx + 0.15), ceilingY, maxPy + 0.15),
+  new THREE.Vector3(mirrorPlanX(minPx - 0.15), ceilingY, maxPy + 0.15),
+  new THREE.Vector3(mirrorPlanX(minPx - 0.15), ceilingY, minPy - 0.15),
+];
+scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(roomPts), new THREE.LineBasicMaterial({ color: 0x334466 })));
+
+{
+  const serverPz = 6;
+  const serverScene = csvToSceneVec(SERVER_ROOM_CSV.px, SERVER_ROOM_CSV.py, serverPz, zMax, minPx, maxPx);
+  serverScene.x += 2.8;
+  serverScene.y = floorGridY + 0.06;
+  serverScene.z += 2.2;
+  const serverDiv = document.createElement('div');
+  serverDiv.className = 'dim-label';
+  serverDiv.style.color = '#c9c9dd';
+  serverDiv.style.borderColor = '#668';
+  serverDiv.textContent = 'server';
+  const serverLbl = new CSS2DObject(serverDiv);
+  serverLbl.name = 'serverRoomLabel';
+  serverLbl.position.copy(serverScene);
+  scene.add(serverLbl);
+}
+
+const gizmoGroup = new THREE.Group();
+gizmoGroup.name = 'csvAxisGizmo';
+scene.add(gizmoGroup);
+{
+  const by = gizmoRows;
+  const plan = Math.max(Math.abs(maxPx - minPx), Math.abs(maxPy - minPy), 0.01);
+  const vert = Math.max(zMax - zMin, 0.01);
+  const armLen = Math.max(1.5, 0.1 * Math.max(plan, vert));
+  GIZMO_ARM_LEN = armLen;
+  if (by.O && by.X && by.Y && by.Z) {
+    const O = vScene(by.O);
+    const tX = vScene(by.X);
+    const tY = vScene(by.Y);
+    const tZ = vScene(by.Z);
+    const dX = tX.clone().sub(O).setLength(armLen);
+    const dY = tY.clone().sub(O).setLength(armLen);
+    const dZ = tZ.clone().sub(O).setLength(armLen);
+    const aX = O.clone().add(dX);
+    const aY = O.clone().add(dY);
+    const aZ = O.clone().add(dZ);
+    const pos = new Float32Array([
+      O.x, O.y, O.z, aX.x, aX.y, aX.z,
+      O.x, O.y, O.z, aY.x, aY.y, aY.z,
+      O.x, O.y, O.z, aZ.x, aZ.y, aZ.z
+    ]);
+    const colr = new Float32Array([
+      1, 0.2, 0.2, 1, 0.25, 0.25,
+      0.2, 1, 0.2, 0.2, 1, 0.25,
+      0.2, 0.35, 1, 0.2, 0.4, 1
+    ]);
+    const gGeo = new THREE.BufferGeometry();
+    gGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    gGeo.setAttribute('color', new THREE.BufferAttribute(colr, 3));
+    const gSeg = new THREE.LineSegments(
+      gGeo,
+      new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false, transparent: true, opacity: 0.98 })
+    );
+    gSeg.renderOrder = 50;
+    gizmoGroup.add(gSeg);
+    const addLbl = (p, label, color) => {
+      const div = document.createElement('div');
+      div.className = 'dim-label';
+      div.style.color = color;
+      div.textContent = label;
+      const lo = new CSS2DObject(div);
+      lo.position.copy(p);
+      gizmoGroup.add(lo);
+    };
+    addLbl(aX, 'CSV +X', '#f66');
+    addLbl(aY, 'CSV +Y', '#6f6');
+    addLbl(aZ, 'CSV +Z', '#6af');
+  } else {
+    gizmoGroup.visible = false;
+    const chk = document.getElementById('showGizmo');
+    if (chk) chk.disabled = true;
+  }
+}
+
+/** WebGL respects parent.visible; CSS2DRenderer only checks each CSS2DObject.visible. */
+function setCsvGizmoVisible(wantOn) {
+  const hasGeom = gizmoGroup.children.length > 0;
+  const on = !!wantOn && hasGeom;
+  gizmoGroup.visible = on;
+  gizmoGroup.traverse(o => {
+    if (o.isCSS2DObject) o.visible = on;
+  });
+}
+
+const chkGizmo = document.getElementById('showGizmo');
+if (chkGizmo) {
+  setCsvGizmoVisible(chkGizmo.checked);
+  chkGizmo.addEventListener('change', e => {
+    setCsvGizmoVisible(e.target.checked);
+  });
+}
+
+function buildLegend(mode) {
+  const el = document.getElementById('legend');
+  el.innerHTML = `<div style="color:#aaa;margin-bottom:6px">Bounds (CSV)</div>
+    <div class="legend-row">position_x</div><div style="margin-left:18px">${minPx.toFixed(2)} … ${maxPx.toFixed(2)} m</div>
+    <div class="legend-row">position_y</div><div style="margin-left:18px">${minPy.toFixed(2)} … ${maxPy.toFixed(2)} m</div>
+    <div class="legend-row">position_z</div><div style="margin-left:18px">${zMin.toFixed(2)} … ${zMax.toFixed(2)} m</div>
+    <div style="margin-top:8px;color:#669">Ceiling plane scene Y = 0 (CSV z − ${zMax.toFixed(3)} m)</div>
+    <div style="margin-top:4px;color:#666;font-size:10px">cable: ${dropMin.toFixed(2)} – ${dropMax.toFixed(2)} m</div>
+    <div style="margin-top:6px;color:#7a7">Gizmo: RGB = CSV +X, +Y, +Z (arms scaled to ≈10% of size${typeof GIZMO_ARM_LEN === 'number' && GIZMO_ARM_LEN > 0 ? `, max ${GIZMO_ARM_LEN.toFixed(1)} m` : ''})</div>
+    <div style="margin-top:4px;color:#c93">Steel catenary: <code>${CATENARY_FILE}</code> · map=<code>${CAT_MAP_MODE}</code><br><span style="font-size:10px">${catenaryLegendLine} · flipPy=<code>${catenaryEffectiveFlip}</code></span></div>
+    <div style="margin-top:4px;color:#666;font-size:10px">Floor grid at scene Y = ${floorGridY.toFixed(3)} m (CSV origin ${gizmoRows.O ? '0,0,0' : '—, fallback'})</div>`;
+  if (mode === 'drop') {
+    el.innerHTML += `<div class="legend-row" style="margin-top:8px"><div class="legend-dot" style="background:#44ff88"></div> short drop</div>
+      <div class="legend-row"><div class="legend-dot" style="background:#ff6644"></div> long drop</div>`;
+  } else if (mode === 'height') {
+    el.innerHTML += `<div class="legend-row" style="margin-top:8px"><div class="legend-dot" style="background:#00eeff"></div> low z</div>
+      <div class="legend-row"><div class="legend-dot" style="background:#8800ff"></div> high z</div>`;
+  } else if (mode === 'lineID') {
+    el.innerHTML += `<div style="margin-top:8px;color:#888">lineIDs: ${lineIDs.length} values</div>`;
+  } else {
+    el.innerHTML += `<div style="margin-top:8px;color:#888">Universes: ${universes.join(', ')}</div>`;
+  }
+}
+
+function refresh() {
+  rebuildVisibleGeometry();
+  buildLegend(colorMode);
+  updateLineFilterRowStats();
+  updateDimmerSliderHints();
+  rebuildDimmerMarkers();
+  rebuildAllCurveMidpoints();
+  if (!viewMode3d) rebuildUnrollSvg();
+}
+
+buildLegend(colorMode);
+syncLineFilterSliderBounds();
+updateLineFilterHint();
+refresh();
+
+const lineFilterEl = document.getElementById('lineFilter');
+if (lineFilterEl) {
+  lineFilterEl.addEventListener('input', () => {
+    updateLineFilterHint();
+    refresh();
+  });
+}
+
+document.getElementById('dimmerSpacingCm')?.addEventListener('input', () => {
+  updateDimmerSliderHints();
+  rebuildDimmerMarkers();
+  if (!viewMode3d) rebuildUnrollSvg();
+});
+document.getElementById('dimmerStartOffsetCm')?.addEventListener('input', () => {
+  updateDimmerSliderHints();
+  rebuildDimmerMarkers();
+  if (!viewMode3d) rebuildUnrollSvg();
+});
+
+document.getElementById('toggleView2d')?.addEventListener('click', () => {
+  setViewMode3d(!viewMode3d);
+});
+
+document.getElementById('toggleUiCollapse')?.addEventListener('click', () => {
+  const ui = document.getElementById('ui');
+  const btn = document.getElementById('toggleUiCollapse');
+  if (!ui || !btn) return;
+  ui.classList.toggle('collapsed');
+  btn.textContent = ui.classList.contains('collapsed') ? 'Show controls' : 'Hide controls';
+});
+
+window.addEventListener('resize', () => {
+  if (!viewMode3d) rebuildUnrollSvg();
+});
+
+document.getElementById('colorMode').addEventListener('change', e => {
+  colorMode = e.target.value;
+  refresh();
+});
+document.getElementById('ptSize').addEventListener('input', e => {
+  ptMat.size = parseFloat(e.target.value) * 0.02;
+});
+document.getElementById('lineOp').addEventListener('input', e => {
+  lineMat.opacity = parseFloat(e.target.value) / 100;
+});
+
+// Hover dimension: highlighted drop + label
+const hoverDropPos = new Float32Array(6);
+const hoverDropGeo = new THREE.BufferGeometry();
+hoverDropGeo.setAttribute('position', new THREE.BufferAttribute(hoverDropPos, 3));
+const hoverDropMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95, depthTest: false });
+const hoverDropLine = new THREE.LineSegments(hoverDropGeo, hoverDropMat);
+hoverDropLine.visible = false;
+hoverDropLine.renderOrder = 20;
+scene.add(hoverDropLine);
+
+const lblDropDiv = document.createElement('div');
+lblDropDiv.className = 'dim-label drop';
+const lblDropObj = new CSS2DObject(lblDropDiv);
+lblDropObj.visible = false;
+scene.add(lblDropObj);
+
+const raycaster = new THREE.Raycaster();
+raycaster.params.Points.threshold = 0.12;
+const mouse = new THREE.Vector2();
+const tooltip = document.getElementById('tooltip');
+let hoveredIdx = -1;
+const highlightMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(0.08, 8, 8),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })
+);
+highlightMesh.visible = false;
+scene.add(highlightMesh);
+
+function isAxisIndicatorHeader(h) {
+  return /AmI/i.test(h) && /axis/i.test(h) && /indicator/i.test(h);
+}
+
+function formatTooltip(d) {
+  const lines = HEADERS.filter(h => !isAxisIndicatorHeader(h)).map(
+    h => `${h}: ${d._raw[h] ?? ''}`
+  );
+  const { prev, next } = rowNeighbors(d);
+  lines.push('--- hang spacing along row (bulbonline · metres) ---');
+  lines.push(`plan   ${formatPitchChainGraphic(prev, d, next, distPlanHang)}`);
+  lines.push(`3D     ${formatPitchChainGraphic(prev, d, next, dist3dHang)}`);
+  lines.push('--- scene (same basis as Boston viz: X=mirror(px), Y=z−zMax, Z=py) ---');
+  lines.push(`mount: (${d.sx.toFixed(3)}, ${d.syMount.toFixed(3)}, ${d.sz.toFixed(3)})`);
+  lines.push(`bulb:  (${d.sx.toFixed(3)}, ${d.syBulb.toFixed(3)}, ${d.sz.toFixed(3)})  drop: ${d.cable.toFixed(3)} m`);
+  return lines.join('\n');
+}
+
+function setHoverDrop(d) {
+  hoverDropPos[0] = d.sx;
+  hoverDropPos[1] = d.syMount;
+  hoverDropPos[2] = d.sz;
+  hoverDropPos[3] = d.sx;
+  hoverDropPos[4] = d.syBulb;
+  hoverDropPos[5] = d.sz;
+  hoverDropGeo.attributes.position.needsUpdate = true;
+  hoverDropLine.visible = true;
+  lblDropObj.position.set(d.sx + 0.2, (d.syMount + d.syBulb) / 2, d.sz);
+  lblDropDiv.textContent = d.cable.toFixed(3) + ' m  (drop)';
+  lblDropObj.visible = true;
+}
+
+function hideHoverDrop() {
+  hoverDropLine.visible = false;
+  lblDropObj.visible = false;
+}
+
+window.addEventListener('mousemove', e => {
+  mouse.x = (e.clientX / innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+  tooltip.style.left = (e.clientX + 16) + 'px';
+  tooltip.style.top = (e.clientY - 10) + 'px';
+});
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  labelRenderer.setSize(innerWidth, innerHeight);
+});
+
+function csvBBoxForLineParam(lineParam, rig) {
+  const param = `${lineParam}`.trim().toLowerCase();
+  if (param === 'rig' || param === 'all') return rig;
+  const lid = Number(lineParam);
+  if (!Number.isFinite(lid)) return rig;
+  const pts = VIZ.filter(d => d.lineID === lid);
+  const b = csvBBoxFromVizPoints(pts);
+  if (!b || pts.length < 4) return rig;
+  return b;
+}
+
+/** Mean distance from each curve sample to nearest bulb in line (CSV metres). */
+function meanMinDistCurveToLine(csvPts, linePts) {
+  let sum = 0;
+  const n = csvPts.length;
+  if (!n || !linePts.length) return Infinity;
+  for (let i = 0; i < n; i++) {
+    const p = csvPts[i];
+    let best = Infinity;
+    for (let j = 0; j < linePts.length; j++) {
+      const q = linePts[j];
+      const dx = p.px - q.px;
+      const dy = p.py - q.py;
+      const dz = p.pz - q.pz;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < best) best = d2;
+    }
+    sum += Math.sqrt(best);
+  }
+  return sum / n;
+}
+
+/** Pick lineID whose bbox-fit curve sits closest to that line’s bulbs (try py flip per line). */
+function pickBestLineForCatenary(verts, idx, objB) {
+  const rig = { minPx, maxPx, minPy, maxPy, minPz: zMin, maxPz: zMax };
+  let best = { lid: lineIDs[0], flipPy: false, bbox: rig, score: Infinity };
+  for (let li = 0; li < lineIDs.length; li++) {
+    const lid = lineIDs[li];
+    const linePts = VIZ.filter(d => d.lineID === lid);
+    if (linePts.length < 4) continue;
+    const b = csvBBoxFromVizPoints(linePts);
+    if (!b) continue;
+    const raw = idx.map(i => objVertexToCsvBBox(verts[i], objB, b));
+    const scoreStraight = meanMinDistCurveToLine(raw, linePts);
+    const flipped = raw.map(p => ({
+      px: p.px,
+      py: b.minPy + b.maxPy - p.py,
+      pz: p.pz
+    }));
+    const scoreFlipped = meanMinDistCurveToLine(flipped, linePts);
+    const useFlip = scoreFlipped < scoreStraight;
+    const score = useFlip ? scoreFlipped : scoreStraight;
+    if (score < best.score) {
+      best = { lid, flipPy: useFlip, bbox: b, score };
+    }
+  }
+  if (!Number.isFinite(best.score)) {
+    return { lid: lineIDs[0], flipPy: false, bbox: rig, score: NaN };
+  }
+  return best;
+}
+
+async function loadSteelCatenary() {
+  try {
+    const url = encodeURI(CATENARY_FILE);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(url + ' → ' + res.status);
+    const text = await res.text();
+    const { verts, segs } = parseObjVerticesAndLines(text);
+    const order = orderPolylineFromSegments(segs, verts.length);
+    if (order.length < 2) throw new Error('OBJ: could not build vertex chain from line segments');
+    const idx = decimateOrderedIndices(order, MAX_CAT_VERTS);
+    const csvBRig = { minPx, maxPx, minPy, maxPy, minPz: zMin, maxPz: zMax };
+    const objB = computeObjCatenaryBounds(verts);
+    let csvPts;
+    let csvBTarget = csvBRig;
+    let effectiveFlipPy = CAT_FLIP_PY;
+    catenaryLegendLine = CAT_LINE_Q;
+    catenaryEffectiveFlip = CAT_FLIP_PY;
+
+    if (CAT_MAP_MODE === 'centroid') {
+      csvPts = idx.map(i => objVecToCsvPxPyPzCentroid(verts[i]));
+      let sx = 0;
+      let sy = 0;
+      let sz = 0;
+      for (const p of csvPts) {
+        sx += p.px;
+        sy += p.py;
+        sz += p.pz;
+      }
+      const n = csvPts.length;
+      const cc = { px: sx / n, py: sy / n, pz: sz / n };
+      let vx = 0;
+      let vy = 0;
+      let vz = 0;
+      for (const d of VIZ) {
+        vx += d.px;
+        vy += d.py;
+        vz += d.pz;
+      }
+      const nv = VIZ.length;
+      const cv = { px: vx / nv, py: vy / nv, pz: vz / nv };
+      const ox = cv.px - cc.px;
+      const oy = cv.py - cc.py;
+      const oz = cv.pz - cc.pz;
+      csvPts = csvPts.map(p => ({ px: p.px + ox, py: p.py + oy, pz: p.pz + oz }));
+    } else {
+      const lp = `${CAT_LINE_Q}`.trim().toLowerCase();
+      if (lp === 'auto') {
+        const picked = pickBestLineForCatenary(verts, idx, objB);
+        csvBTarget = picked.bbox;
+        effectiveFlipPy = picked.flipPy;
+        catenaryEffectiveFlip = picked.flipPy;
+        catenaryLegendLine = Number.isFinite(picked.score)
+          ? `auto → lineID ${picked.lid}, ~${picked.score.toFixed(2)} m`
+          : `auto → lineID ${picked.lid} (fallback)`;
+        console.info('[steel catenary] auto picked lineID', picked.lid, 'flipPy', picked.flipPy, 'mean min-dist', picked.score);
+      } else {
+        csvBTarget = csvBBoxForLineParam(CAT_LINE_Q, csvBRig);
+      }
+      csvPts = idx.map(i => objVertexToCsvBBox(verts[i], objB, csvBTarget));
+    }
+    const flipB = CAT_MAP_MODE === 'centroid' ? csvBRig : csvBTarget;
+    if (effectiveFlipPy) {
+      csvPts = csvPts.map(p => ({
+        px: p.px,
+        py: flipB.minPy + flipB.maxPy - p.py,
+        pz: p.pz
+      }));
+    }
+    const scenePts = csvPts.map(p => csvToSceneVec(p.px, p.py, p.pz, zMax, minPx, maxPx));
+    const geo = new THREE.BufferGeometry().setFromPoints(scenePts);
+    const mat = new THREE.LineBasicMaterial({
+      color: 0xdd9944,
+      transparent: true,
+      opacity: parseFloat(document.getElementById('catOp').value) / 100,
+      depthTest: true
+    });
+    const catLine = new THREE.Line(geo, mat);
+    catLine.name = 'catenaryCurve';
+    while (catenaryGroup.children.length) catenaryGroup.remove(catenaryGroup.children[0]);
+    catenaryGroup.add(catLine);
+    catenaryGroup.visible = document.getElementById('showCatenary').checked;
+    buildLegend(colorMode);
+  } catch (e) {
+    console.warn('[steel catenary]', e.message || e);
+    catenaryGroup.visible = false;
+    const chk = document.getElementById('showCatenary');
+    if (chk) {
+      chk.checked = false;
+      chk.disabled = true;
+    }
+  }
+}
+
+const chkCat = document.getElementById('showCatenary');
+const catOpEl = document.getElementById('catOp');
+if (chkCat) {
+  chkCat.addEventListener('change', e => {
+    catenaryGroup.visible = e.target.checked && catenaryGroup.children.length > 0;
+  });
+}
+if (catOpEl) {
+  catOpEl.addEventListener('input', e => {
+    const catLine = catenaryGroup.children[0];
+    if (catLine && catLine.material) catLine.material.opacity = parseFloat(e.target.value) / 100;
+  });
+}
+
+loadSteelCatenary();
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = pointCloud.visible ? raycaster.intersectObject(pointCloud) : [];
+  if (intersects.length > 0 && displayedRawIndex.length > 0) {
+    const bufIdx = intersects[0].index;
+    const rawIdx = displayedRawIndex[bufIdx];
+    const d = VIZ[rawIdx];
+    if (rawIdx !== hoveredIdx) {
+      hoveredIdx = rawIdx;
+      tooltip.style.display = 'block';
+      tooltip.textContent = formatTooltip(d);
+    }
+    highlightMesh.position.set(d.sx, d.syBulb, d.sz);
+    highlightMesh.visible = true;
+    setHoverDrop(d);
+  } else {
+    if (hoveredIdx !== -1) hideHoverDrop();
+    hoveredIdx = -1;
+    tooltip.style.display = 'none';
+    highlightMesh.visible = false;
+  }
+
+  renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
