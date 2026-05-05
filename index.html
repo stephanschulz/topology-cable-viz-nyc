@@ -1740,6 +1740,8 @@ syncLineFilterSliderBounds();
 updateLineFilterHint();
 refresh();
 
+if (new URLSearchParams(window.location.search).get('view') === '2d') setViewMode3d(false);
+
 const lineFilterEl = document.getElementById('lineFilter');
 if (lineFilterEl) {
   lineFilterEl.addEventListener('input', () => {

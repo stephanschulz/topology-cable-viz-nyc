@@ -1,8 +1,20 @@
 # Pulse Topology – Terminal cable viz
 
+**Live demo:** [GitHub Pages](https://stephanschulz.github.io/topology-cable-viz/)
+
 **Note:** Developed with AI assistance.
 
 Interactive 3D view of cable hang points from `April23_001.csv` by default (or pass `?data=other.csv`). Each non-gizmo row is a mount at `(position_x, position_y, position_z)`; a vertical cable of length `Bulbcablelength(M)` (or any column matching `*cablelength*`) drops to the bulb. Rows with `AmI_*axis*indicator = True` are **orientation markers only** (designer: origin +X, +Y, +Z) and are drawn as an RGB 3-line cross, not as cable points.
+
+## Screenshots
+
+### 3D rig
+
+![3D rig view](images/3d-rig.jpg)
+
+### 2D cable unroll
+
+![2D cable unroll](images/2d-unroll.jpg)
 
 **Scene mapping** (aligned with the Boston `topology-cable-viz` app): `X = mirror(position_x)` about the plan span, `Z = position_y`, and `Y = position_z − zMax` so the highest CSV `position_z` sits at scene **Y = 0** (ceiling plane) and longer drops extend to **more negative Y** — same convention as that app’s `y = −pz` with `pz` as depth below a ceiling at 0.
 
