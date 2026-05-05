@@ -122,12 +122,6 @@
     <p class="hint" style="margin:2px 0 0 0">RGB = CSV +X, +Y, +Z (designer reference rows, scaled)</p>
   </div>
   <div>
-    <label class="gizmo-chk"><input type="checkbox" id="showCatenary" checked> Steel catenary (OBJ)</label><br>
-    <label>Catenary opacity</label><br>
-    <input type="range" id="catOp" min="0" max="100" value="85" step="5">
-    <p class="hint" style="margin:4px 0 0 0"><code>?catLine=auto</code> (default) picks best <code>lineID</code> fit · <code>rig</code> · <code>N</code> · <code>?catFlipPy=0</code></p>
-  </div>
-  <div>
     <label>Weights export</label><br>
     <button type="button" id="exportLineWeights" style="background:#111;border:1px solid #333;color:#ccc;padding:6px 8px;font-family:inherit;font-size:12px;cursor:pointer;width:100%">Per-line weights (CSV)</button>
     <p class="hint" style="margin:4px 0 0 0">Bulb cable &amp; ethernet totals, gram breakdown per <code>lineID</code> · uses <code>indoor-weights.csv</code></p>
@@ -153,7 +147,7 @@
 
 <div id="info">
   Drag orbit &middot; Scroll zoom &middot; Right-drag pan &middot; Hover point<br>
-  <span style="color:#444">Serve folder with a static server &middot; Data: <code id="dataFileHint">April23_001.csv</code> · <code>?catLine=0|rig</code> · <code>?catFlipPy=0|1</code></span>
+  <span style="color:#444">Serve folder with a static server &middot; Data: <code id="dataFileHint">April23_001.csv</code> · <code>?data=other.csv</code></span>
 </div>
 
 <div id="rigStats" aria-label="Rig statistics"></div>
@@ -331,148 +325,13 @@ function applySceneCoords(d, zMax, minPx, maxPx) {
   d.sz = d.py;
 }
 
-/** Vertex scale + offset so OBJ axis ranges match CSV rig bbox (curve span ≠ rig span on every axis). */
-function affineAxis(u, uMin, uMax, vMin, vMax) {
-  const du = uMax - uMin;
-  if (du < 1e-12) return (vMin + vMax) / 2;
-  return ((u - uMin) / du) * (vMax - vMin) + vMin;
-}
-
-/** Bounds on OBJ coords used for mapping: vx→px, vz→py, −vy→pz (Blender Y flipped to CSV z-like height). */
-function computeObjCatenaryBounds(verts) {
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minZ = Infinity;
-  let maxZ = -Infinity;
-  let minNz = Infinity;
-  let maxNz = -Infinity;
-  for (let i = 0; i < verts.length; i++) {
-    const v = verts[i];
-    minX = Math.min(minX, v.x);
-    maxX = Math.max(maxX, v.x);
-    minZ = Math.min(minZ, v.z);
-    maxZ = Math.max(maxZ, v.z);
-    const nz = -v.y;
-    minNz = Math.min(minNz, nz);
-    maxNz = Math.max(maxNz, nz);
-  }
-  return { minX, maxX, minZ, maxZ, minNz, maxNz };
-}
-
-function objVertexToCsvBBox(v, objB, csvB) {
-  return {
-    px: affineAxis(v.x, objB.minX, objB.maxX, csvB.minPx, csvB.maxPx),
-    py: affineAxis(v.z, objB.minZ, objB.maxZ, csvB.minPy, csvB.maxPy),
-    pz: affineAxis(-v.y, objB.minNz, objB.maxNz, csvB.minPz, csvB.maxPz)
-  };
-}
-
-/** Legacy: raw-ish remap + centroid shift (see ?catMap=centroid). */
-function objVecToCsvPxPyPzCentroid(v) {
-  return { px: v.x, py: v.z, pz: -v.y };
-}
-
 function csvToSceneVec(px, py, pz, zMaxRef, minPxRef, maxPxRef) {
   return new THREE.Vector3(minPxRef + maxPxRef - px, pz - zMaxRef, py);
-}
-
-function parseObjVerticesAndLines(text) {
-  const verts = [];
-  const segs = [];
-  for (const raw of text.split('\n')) {
-    const line = raw.trim();
-    if (line.startsWith('v ')) {
-      const parts = line.slice(2).trim().split(/\s+/);
-      verts.push(new THREE.Vector3(+parts[0], +parts[1], +parts[2]));
-    } else if (line.startsWith('l ')) {
-      const parts = line
-        .slice(2)
-        .trim()
-        .split(/\s+/)
-        .map(x => parseInt(x, 10) - 1);
-      if (parts.length >= 2 && parts.every(Number.isFinite)) segs.push([parts[0], parts[1]]);
-    }
-  }
-  return { verts, segs };
-}
-
-function orderPolylineFromSegments(segs, nVert) {
-  if (segs.length === 0 || nVert < 2) return [];
-  const adj = Array.from({ length: nVert }, () => []);
-  for (const [a, b] of segs) {
-    if (a >= 0 && a < nVert && b >= 0 && b < nVert) {
-      adj[a].push(b);
-      adj[b].push(a);
-    }
-  }
-  let start = 0;
-  for (let i = 0; i < nVert; i++) {
-    if (adj[i].length === 1) {
-      start = i;
-      break;
-    }
-  }
-  const out = [start];
-  let prev = -1;
-  let cur = start;
-  for (let guard = 0; guard < nVert + 8; guard++) {
-    const nexts = adj[cur].filter(x => x !== prev);
-    if (nexts.length === 0) break;
-    const next = nexts[0];
-    out.push(next);
-    prev = cur;
-    cur = next;
-    if (cur === start && out.length > 2) break;
-  }
-  return out;
-}
-
-function decimateOrderedIndices(order, maxPts) {
-  if (order.length <= maxPts) return order.slice();
-  const out = [];
-  const step = (order.length - 1) / (maxPts - 1);
-  for (let i = 0; i < maxPts - 1; i++) out.push(order[Math.round(i * step)]);
-  out.push(order[order.length - 1]);
-  return out;
-}
-
-function csvBBoxFromVizPoints(pts) {
-  if (!pts.length) return null;
-  let minPx = Infinity;
-  let maxPx = -Infinity;
-  let minPy = Infinity;
-  let maxPy = -Infinity;
-  let minPz = Infinity;
-  let maxPz = -Infinity;
-  for (let i = 0; i < pts.length; i++) {
-    const d = pts[i];
-    minPx = Math.min(minPx, d.px);
-    maxPx = Math.max(maxPx, d.px);
-    minPy = Math.min(minPy, d.py);
-    maxPy = Math.max(maxPy, d.py);
-    minPz = Math.min(minPz, d.pz);
-    maxPz = Math.max(maxPz, d.pz);
-  }
-  return { minPx, maxPx, minPy, maxPy, minPz, maxPz };
 }
 
 let HEADERS = [];
 const DATA_FILE =
   new URLSearchParams(window.location.search).get('data') || 'April23_001.csv';
-const CATENARY_FILE =
-  new URLSearchParams(window.location.search).get('catenary') || '3D Files/catenaries.obj';
-/** bbox (default): stretch OBJ curve AABB to CSV rig AABB on px/py/pz. centroid: old center-match only. */
-const CAT_MAP_MODE = (new URLSearchParams(window.location.search).get('catMap') || 'bbox').toLowerCase();
-/** Align catenary: auto=pick lineID by nearest 3D fit, rig=full rig, N=explicit lineID */
-const CAT_LINE_Q = new URLSearchParams(window.location.search).get('catLine') ?? 'auto';
-/** Mirror CSV py (scene Z) so path runs “down” along rows; disable with catFlipPy=0 */
-const CAT_FLIP_PY_RAW = new URLSearchParams(window.location.search).get('catFlipPy');
-const CAT_FLIP_PY =
-  CAT_FLIP_PY_RAW === null ||
-  CAT_FLIP_PY_RAW === '1' ||
-  `${CAT_FLIP_PY_RAW}`.toLowerCase() === 'true';
-const MAX_CAT_VERTS = 14000;
-
 let ALL = [];
 let VIZ = [];
 let CABLE_KEY = 'Bulbcablelength(M)';
@@ -521,8 +380,6 @@ const dropMax = Math.max(...VIZ.map(d => d.cable));
 const zMin = Math.min(...VIZ.map(d => d.pz));
 const zMax = Math.max(...VIZ.map(d => d.pz));
 const lineIDs = [...new Set(VIZ.map(d => d.lineID).filter(Number.isFinite))].sort((a, b) => a - b);
-let catenaryLegendLine = CAT_LINE_Q;
-let catenaryEffectiveFlip = CAT_FLIP_PY;
 const universes = [...new Set(VIZ.map(d => d.universe).filter(Number.isFinite))].sort((a, b) => a - b);
 const maxLineID = lineIDs.length ? Math.max(...lineIDs) : 1;
 const maxUniv = universes.length ? Math.max(...universes) : 1;
@@ -632,7 +489,7 @@ function computeSteelLineWeights(viz, sortedLineIds, coeff) {
       for (let j = 0; j < n; j++) ethM += Math.max(0, sorted[j].ethernetM);
       ethNote = 'per-lamp lengths from CSV ethernet column';
     } else {
-      // Chord length between consecutive hang points (CSV x,y,z), not arc length along OBJ catenary.
+      // Chord length between consecutive hang points (CSV x,y,z), not physical cable arc length.
       for (let j = 1; j < n; j++) {
         const a = sorted[j - 1];
         const b = sorted[j];
@@ -1041,10 +898,6 @@ const lineGeo = new THREE.BufferGeometry();
 const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.5 });
 const dropLines = new THREE.LineSegments(lineGeo, lineMat);
 scene.add(dropLines);
-
-const catenaryGroup = new THREE.Group();
-catenaryGroup.name = 'steelCatenary';
-scene.add(catenaryGroup);
 
 const dimmerGroup = new THREE.Group();
 dimmerGroup.name = 'dimmerAlongCurve';
@@ -1858,7 +1711,6 @@ function buildLegend(mode) {
     <div style="margin-top:8px;color:#669">Ceiling plane scene Y = 0 (CSV z − ${zMax.toFixed(3)} m)</div>
     <div style="margin-top:4px;color:#666;font-size:10px">cable: ${dropMin.toFixed(2)} – ${dropMax.toFixed(2)} m</div>
     <div style="margin-top:6px;color:#7a7">Gizmo: RGB = CSV +X, +Y, +Z (arms scaled to ≈10% of size${typeof GIZMO_ARM_LEN === 'number' && GIZMO_ARM_LEN > 0 ? `, max ${GIZMO_ARM_LEN.toFixed(1)} m` : ''})</div>
-    <div style="margin-top:4px;color:#c93">Steel catenary: <code>${CATENARY_FILE}</code> · map=<code>${CAT_MAP_MODE}</code><br><span style="font-size:10px">${catenaryLegendLine} · flipPy=<code>${catenaryEffectiveFlip}</code></span></div>
     <div style="margin-top:4px;color:#666;font-size:10px">Floor grid at scene Y = ${floorGridY.toFixed(3)} m (CSV origin ${gizmoRows.O ? '0,0,0' : '—, fallback'})</div>`;
   if (mode === 'drop') {
     el.innerHTML += `<div class="legend-row" style="margin-top:8px"><div class="legend-dot" style="background:#44ff88"></div> short drop</div>
@@ -2012,177 +1864,6 @@ window.addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
   labelRenderer.setSize(innerWidth, innerHeight);
 });
-
-function csvBBoxForLineParam(lineParam, rig) {
-  const param = `${lineParam}`.trim().toLowerCase();
-  if (param === 'rig' || param === 'all') return rig;
-  const lid = Number(lineParam);
-  if (!Number.isFinite(lid)) return rig;
-  const pts = VIZ.filter(d => d.lineID === lid);
-  const b = csvBBoxFromVizPoints(pts);
-  if (!b || pts.length < 4) return rig;
-  return b;
-}
-
-/** Mean distance from each curve sample to nearest bulb in line (CSV metres). */
-function meanMinDistCurveToLine(csvPts, linePts) {
-  let sum = 0;
-  const n = csvPts.length;
-  if (!n || !linePts.length) return Infinity;
-  for (let i = 0; i < n; i++) {
-    const p = csvPts[i];
-    let best = Infinity;
-    for (let j = 0; j < linePts.length; j++) {
-      const q = linePts[j];
-      const dx = p.px - q.px;
-      const dy = p.py - q.py;
-      const dz = p.pz - q.pz;
-      const d2 = dx * dx + dy * dy + dz * dz;
-      if (d2 < best) best = d2;
-    }
-    sum += Math.sqrt(best);
-  }
-  return sum / n;
-}
-
-/** Pick lineID whose bbox-fit curve sits closest to that line’s bulbs (try py flip per line). */
-function pickBestLineForCatenary(verts, idx, objB) {
-  const rig = { minPx, maxPx, minPy, maxPy, minPz: zMin, maxPz: zMax };
-  let best = { lid: lineIDs[0], flipPy: false, bbox: rig, score: Infinity };
-  for (let li = 0; li < lineIDs.length; li++) {
-    const lid = lineIDs[li];
-    const linePts = VIZ.filter(d => d.lineID === lid);
-    if (linePts.length < 4) continue;
-    const b = csvBBoxFromVizPoints(linePts);
-    if (!b) continue;
-    const raw = idx.map(i => objVertexToCsvBBox(verts[i], objB, b));
-    const scoreStraight = meanMinDistCurveToLine(raw, linePts);
-    const flipped = raw.map(p => ({
-      px: p.px,
-      py: b.minPy + b.maxPy - p.py,
-      pz: p.pz
-    }));
-    const scoreFlipped = meanMinDistCurveToLine(flipped, linePts);
-    const useFlip = scoreFlipped < scoreStraight;
-    const score = useFlip ? scoreFlipped : scoreStraight;
-    if (score < best.score) {
-      best = { lid, flipPy: useFlip, bbox: b, score };
-    }
-  }
-  if (!Number.isFinite(best.score)) {
-    return { lid: lineIDs[0], flipPy: false, bbox: rig, score: NaN };
-  }
-  return best;
-}
-
-async function loadSteelCatenary() {
-  try {
-    const url = encodeURI(CATENARY_FILE);
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(url + ' → ' + res.status);
-    const text = await res.text();
-    const { verts, segs } = parseObjVerticesAndLines(text);
-    const order = orderPolylineFromSegments(segs, verts.length);
-    if (order.length < 2) throw new Error('OBJ: could not build vertex chain from line segments');
-    const idx = decimateOrderedIndices(order, MAX_CAT_VERTS);
-    const csvBRig = { minPx, maxPx, minPy, maxPy, minPz: zMin, maxPz: zMax };
-    const objB = computeObjCatenaryBounds(verts);
-    let csvPts;
-    let csvBTarget = csvBRig;
-    let effectiveFlipPy = CAT_FLIP_PY;
-    catenaryLegendLine = CAT_LINE_Q;
-    catenaryEffectiveFlip = CAT_FLIP_PY;
-
-    if (CAT_MAP_MODE === 'centroid') {
-      csvPts = idx.map(i => objVecToCsvPxPyPzCentroid(verts[i]));
-      let sx = 0;
-      let sy = 0;
-      let sz = 0;
-      for (const p of csvPts) {
-        sx += p.px;
-        sy += p.py;
-        sz += p.pz;
-      }
-      const n = csvPts.length;
-      const cc = { px: sx / n, py: sy / n, pz: sz / n };
-      let vx = 0;
-      let vy = 0;
-      let vz = 0;
-      for (const d of VIZ) {
-        vx += d.px;
-        vy += d.py;
-        vz += d.pz;
-      }
-      const nv = VIZ.length;
-      const cv = { px: vx / nv, py: vy / nv, pz: vz / nv };
-      const ox = cv.px - cc.px;
-      const oy = cv.py - cc.py;
-      const oz = cv.pz - cc.pz;
-      csvPts = csvPts.map(p => ({ px: p.px + ox, py: p.py + oy, pz: p.pz + oz }));
-    } else {
-      const lp = `${CAT_LINE_Q}`.trim().toLowerCase();
-      if (lp === 'auto') {
-        const picked = pickBestLineForCatenary(verts, idx, objB);
-        csvBTarget = picked.bbox;
-        effectiveFlipPy = picked.flipPy;
-        catenaryEffectiveFlip = picked.flipPy;
-        catenaryLegendLine = Number.isFinite(picked.score)
-          ? `auto → lineID ${picked.lid}, ~${picked.score.toFixed(2)} m`
-          : `auto → lineID ${picked.lid} (fallback)`;
-        console.info('[steel catenary] auto picked lineID', picked.lid, 'flipPy', picked.flipPy, 'mean min-dist', picked.score);
-      } else {
-        csvBTarget = csvBBoxForLineParam(CAT_LINE_Q, csvBRig);
-      }
-      csvPts = idx.map(i => objVertexToCsvBBox(verts[i], objB, csvBTarget));
-    }
-    const flipB = CAT_MAP_MODE === 'centroid' ? csvBRig : csvBTarget;
-    if (effectiveFlipPy) {
-      csvPts = csvPts.map(p => ({
-        px: p.px,
-        py: flipB.minPy + flipB.maxPy - p.py,
-        pz: p.pz
-      }));
-    }
-    const scenePts = csvPts.map(p => csvToSceneVec(p.px, p.py, p.pz, zMax, minPx, maxPx));
-    const geo = new THREE.BufferGeometry().setFromPoints(scenePts);
-    const mat = new THREE.LineBasicMaterial({
-      color: 0xdd9944,
-      transparent: true,
-      opacity: parseFloat(document.getElementById('catOp').value) / 100,
-      depthTest: true
-    });
-    const catLine = new THREE.Line(geo, mat);
-    catLine.name = 'catenaryCurve';
-    while (catenaryGroup.children.length) catenaryGroup.remove(catenaryGroup.children[0]);
-    catenaryGroup.add(catLine);
-    catenaryGroup.visible = document.getElementById('showCatenary').checked;
-    buildLegend(colorMode);
-  } catch (e) {
-    console.warn('[steel catenary]', e.message || e);
-    catenaryGroup.visible = false;
-    const chk = document.getElementById('showCatenary');
-    if (chk) {
-      chk.checked = false;
-      chk.disabled = true;
-    }
-  }
-}
-
-const chkCat = document.getElementById('showCatenary');
-const catOpEl = document.getElementById('catOp');
-if (chkCat) {
-  chkCat.addEventListener('change', e => {
-    catenaryGroup.visible = e.target.checked && catenaryGroup.children.length > 0;
-  });
-}
-if (catOpEl) {
-  catOpEl.addEventListener('input', e => {
-    const catLine = catenaryGroup.children[0];
-    if (catLine && catLine.material) catLine.material.opacity = parseFloat(e.target.value) / 100;
-  });
-}
-
-loadSteelCatenary();
 
 function animate() {
   requestAnimationFrame(animate);
