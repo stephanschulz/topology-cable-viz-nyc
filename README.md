@@ -1,6 +1,6 @@
 # Pulse Topology – Terminal cable viz
 
-**Live demo:** [GitHub Pages](https://stephanschulz.github.io/topology-cable-viz-nyc/)
+**Live demo:** [GitHub Pages](https://stephanschulz.github.io/topology-cable-viz-nyc/) · **Repo:** [github.com/stephanschulz/topology-cable-viz-nyc](https://github.com/stephanschulz/topology-cable-viz-nyc)
 
 **Note:** Developed with AI assistance.
 
