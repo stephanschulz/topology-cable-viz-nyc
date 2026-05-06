@@ -96,10 +96,6 @@
     </select>
   </div>
   <div>
-    <label>Point size</label><br>
-    <input type="range" id="ptSize" min="1" max="10" value="4" step="0.5">
-  </div>
-  <div>
     <label>Show row (<code>lineID</code>) <span id="lineFilterHint">all</span></label><br>
     <input type="range" id="lineFilter" min="-1" max="0" value="-1" step="1"
       title="-1 = entire rig; otherwise one row by index in sorted lineID list">
@@ -115,10 +111,6 @@
     </div>
   </div>
   <div>
-    <label>Drop line opacity</label><br>
-    <input type="range" id="lineOp" min="0" max="100" value="50" step="5">
-  </div>
-  <div>
     <label class="gizmo-chk"><input type="checkbox" id="showGizmo" checked> CSV axis cross</label>
     <p class="hint" style="margin:2px 0 0 0">RGB = CSV +X, +Y, +Z (designer reference rows, scaled)</p>
   </div>
@@ -131,12 +123,22 @@
     <b>Cable</b>: <code id="cableKeyHint">Bulbcablelength(M)</code> (auto-detected from header)<br>
     3D view uses CSV metres directly: <code>X = position_x</code>, <code>Y = position_z</code>, <code>Z = position_y</code> (cable drop along −Y)
   </div>
+  <div style="margin-top:8px;padding-top:8px;border-top:1px solid #333">
+    <div style="color:#888;font-size:10px;margin-bottom:4px;letter-spacing:0.5px">DISPLAY</div>
+    <label>Point / dimmer size <span id="ptSizeHint">4.0</span></label><br>
+    <input type="range" id="ptSize" min="1" max="10" value="4" step="0.5">
+    <label style="display:inline-block;margin-top:6px">Line width <span id="lineWidthHint">2</span> px</label><br>
+    <input type="range" id="lineWidth" min="1" max="10" value="2" step="0.5">
+    <label style="display:inline-block;margin-top:6px">Drop line opacity</label><br>
+    <input type="range" id="lineOp" min="0" max="100" value="50" step="5">
+  </div>
   </div>
 </div>
 
 <div id="view2d" aria-hidden="true">
   <p class="unroll-caption">
-    Left = start of hang curve (<b>bulb-on-line</b> order, CSV mount path). Solid bar = hangs only; dashed = extension past last hang if dimmers require it.
+    Left = start of hang curve (<b>bulb-on-line</b> order, CSV mount path). Solid bar = hangs only; brown dashed = extension past last hang if dimmers require it.
+    Indigo dashed segments at each end show the straight chord from the wall <b>anchor</b> to the first/last bulb (CSV catenary endpoints).
     <b>S</b> = total developed length. Segment labels are metres (e.g. <code>0.335m</code>, <code>8.710m</code>). Grey slanted lines join each bulb joint to its dimmer centre (same index).
     <b>server</b> is drawn on the side of the strip toward CSV plan (<code>4</code>, <code>11</code>) — nearer first hang vs last hang.
   </p>
@@ -184,7 +186,7 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 // =====================================================================
 // CSV SOURCE — change this single line to point at a different dataset.
 // Bulb mounts and per-lineID catenary geometry are read from the same file.
-const DATA_FILE = 'May5_003.csv';
+const DATA_FILE = 'May5_005.csv';
 // =====================================================================
 
 {
@@ -708,18 +710,23 @@ document.getElementById('exportUnrollPdf')?.addEventListener('click', () => {
   });
 });
 
-/** Sorted bulbs per lineID (bulbonline order), for hover pitch vs neighbors. */
+/** Sorted bulbs per lineID (bulbonline order if present, else CSV row order). */
 const LINE_SORTED_BY_LINEID = new Map();
 for (let li = 0; li < lineIDs.length; li++) {
   const lid = lineIDs[li];
-  LINE_SORTED_BY_LINEID.set(
-    lid,
-    VIZ.filter(d => d.lineID === lid).sort((a, b) => {
-      const ba = Number.isFinite(a.bulbonline) ? a.bulbonline : 0;
-      const bb = Number.isFinite(b.bulbonline) ? b.bulbonline : 0;
-      return ba - bb;
-    })
-  );
+  const bulbsAreNumbered = VIZ.some(d => d.lineID === lid && Number.isFinite(d.bulbonline));
+  const arr = VIZ.filter(d => d.lineID === lid).sort((a, b) => {
+    if (bulbsAreNumbered) {
+      const ba = Number.isFinite(a.bulbonline) ? a.bulbonline : Number.POSITIVE_INFINITY;
+      const bb = Number.isFinite(b.bulbonline) ? b.bulbonline : Number.POSITIVE_INFINITY;
+      if (ba !== bb) return ba - bb;
+    }
+    const ia = Number.isFinite(a.index) ? a.index : 0;
+    const ib = Number.isFinite(b.index) ? b.index : 0;
+    return ia - ib;
+  });
+  for (let i = 0; i < arr.length; i++) arr[i]._indexInLine = i + 1;
+  LINE_SORTED_BY_LINEID.set(lid, arr);
 }
 
 function rowNeighbors(d) {
@@ -750,6 +757,14 @@ function dist3dHang(a, b) {
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+/** 3D distance between any two CSV-positioned objects ({px,py,pz}). */
+function csvDist3(a, b) {
+  const dx = a.px - b.px;
+  const dy = a.py - b.py;
+  const dz = a.pz - b.pz;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
 /** Same ethernet metres rule as weight export: CSV per lamp if complete column, else Σ 3D chords between hangs. */
 function lineEthernetTotalM(sorted) {
   const n = sorted.length;
@@ -770,13 +785,16 @@ function spanFirstLast3d(sorted) {
   return dist3dHang(sorted[0], sorted[sorted.length - 1]);
 }
 
-/** Tooltip: bulbonline as shown in CSV (compact). */
+/** Tooltip: bulbonline as shown in CSV; falls back to per-line index when CSV omits the column. */
 function bulbonlineLabel(rec) {
   if (!rec) return '—';
   const b = rec.bulbonline;
-  if (!Number.isFinite(b)) return '?';
-  if (Math.abs(b - Math.round(b)) < 1e-6) return String(Math.round(b));
-  return b.toFixed(2);
+  if (Number.isFinite(b)) {
+    if (Math.abs(b - Math.round(b)) < 1e-6) return String(Math.round(b));
+    return b.toFixed(2);
+  }
+  if (Number.isFinite(rec._indexInLine)) return String(rec._indexInLine);
+  return '?';
 }
 
 /** One row: prev — planDist — curr — planDist — next (bulbonline order). */
@@ -963,9 +981,16 @@ const pointCloud = new THREE.Points(ptGeo, ptMat);
 scene.add(pointCloud);
 
 const lineGeo = new THREE.BufferGeometry();
-const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.5 });
+const lineMat = new THREE.LineBasicMaterial({
+  vertexColors: true,
+  transparent: true,
+  opacity: 0.5,
+  linewidth: parseFloat(document.getElementById('lineWidth').value)
+});
 const dropLines = new THREE.LineSegments(lineGeo, lineMat);
 scene.add(dropLines);
+/** Tracks every LineBasicMaterial whose linewidth follows the Line width slider. */
+const tunedLineMats = new Set([lineMat]);
 
 const dimmerGroup = new THREE.Group();
 dimmerGroup.name = 'dimmerAlongCurve';
@@ -1075,6 +1100,7 @@ function rebuildAllCurveMidpoints() {
     const m = new THREE.Mesh(curveCenterSphereGeo, curveCenterMat);
     m.position.copy(midPos);
     m.renderOrder = 42;
+    m.scale.setScalar(getPointScaleFactor());
     curveMidpointsGroup.add(m);
   }
 }
@@ -1213,9 +1239,11 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
     <line x1="${legX}" y1="${legMid(3)}" x2="${legX + 22}" y2="${legMid(3)}" stroke="#111" stroke-width="5"/>
     <line x1="${legX + 22}" y1="${legMid(3)}" x2="${legX + 42}" y2="${legMid(3)}" stroke="#a0522d" stroke-width="4" stroke-dasharray="8 5"/>
     <text x="${legTextX}" y="${legTy(3)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">hangs · extension</text>
+    <line x1="${legX}" y1="${legMid(4)}" x2="${legX + 32}" y2="${legMid(4)}" stroke="#669" stroke-width="3" stroke-dasharray="6 4"/>
+    <text x="${legTextX}" y="${legTy(4)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">anchor chord</text>
   </g>`;
 
-  let yCursor = legYTop + 4 * legRowH + 14;
+  let yCursor = legYTop + 5 * legRowH + 14;
   let allG = '';
 
   for (let si = 0; si < ids.length; si++) {
@@ -1233,6 +1261,20 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
     const lastDimmerS = startA + (nBulbs - 1) * spacingM;
     const barEnd = Math.max(coreLen, lastDimmerS);
 
+    const catEntry = CAT_BY_LINE.get(lid);
+    let dStartChord = 0;
+    let dEndChord = 0;
+    let startAnchor = null;
+    let endAnchor = null;
+    if (catEntry) {
+      const dE1ToFirst = csvDist3(catEntry.e1, sorted[0]);
+      const dE2ToFirst = csvDist3(catEntry.e2, sorted[0]);
+      startAnchor = dE1ToFirst <= dE2ToFirst ? catEntry.e1 : catEntry.e2;
+      endAnchor = startAnchor === catEntry.e1 ? catEntry.e2 : catEntry.e1;
+      dStartChord = csvDist3(startAnchor, sorted[0]);
+      dEndChord = csvDist3(sorted[nBulbs - 1], endAnchor);
+    }
+
     const dSrvFirst = Math.hypot(
       sorted[0].px - SERVER_ROOM_CSV.px,
       sorted[0].py - SERVER_ROOM_CSV.py
@@ -1249,9 +1291,12 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
     else marginL += serverSidePad;
 
     const innerW = W - marginL - marginR;
-    const scale = innerW / Math.max(barEnd, 1e-6);
+    const barLeftS = -dStartChord;
+    const barRightS = barEnd + dEndChord;
+    const developedTotal = barRightS - barLeftS;
+    const scale = innerW / Math.max(developedTotal, 1e-6);
 
-    const xAt = s => marginL + Math.min(Math.max(0, s), barEnd) * scale;
+    const xAt = s => marginL + (Math.min(Math.max(barLeftS, s), barRightS) - barLeftS) * scale;
 
     const yTitle = yCursor;
     const yBar = yCursor + 36;
@@ -1277,7 +1322,29 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
     }</text>`;
     g += `<text x="${rowLabX}" y="${yBar + 5}" ${rowLabStyle}>lineID ${lid}</text>`;
 
+    if (dStartChord > 1e-6) {
+      g += `<line x1="${xAt(barLeftS)}" y1="${yBar}" x2="${xAt(0)}" y2="${yBar}" stroke="#669" stroke-width="3" stroke-dasharray="6 4" stroke-linecap="butt"/>`;
+    }
+    if (dEndChord > 1e-6) {
+      g += `<line x1="${xAt(barEnd)}" y1="${yBar}" x2="${xAt(barRightS)}" y2="${yBar}" stroke="#669" stroke-width="3" stroke-dasharray="6 4" stroke-linecap="butt"/>`;
+    }
+
     g += `<line x1="${xAt(0)}" y1="${yBar}" x2="${xAt(coreLen)}" y2="${yBar}" stroke="#111" stroke-width="6" stroke-linecap="butt"/>`;
+
+    if (catEntry) {
+      const tickH = 14;
+      const labelOffset = 28;
+      if (startAnchor) {
+        const xa = xAt(barLeftS);
+        g += `<line x1="${xa}" y1="${yBar - tickH}" x2="${xa}" y2="${yBar + tickH}" stroke="#669" stroke-width="2"/>`;
+        g += `<text x="${xa}" y="${yBar - labelOffset}" text-anchor="middle" fill="#225" font-size="9.5" font-weight="bold" font-family="Courier New, monospace">anchor 1</text>`;
+      }
+      if (endAnchor) {
+        const xa = xAt(barRightS);
+        g += `<line x1="${xa}" y1="${yBar - tickH}" x2="${xa}" y2="${yBar + tickH}" stroke="#669" stroke-width="2"/>`;
+        g += `<text x="${xa}" y="${yBar - labelOffset}" text-anchor="middle" fill="#225" font-size="9.5" font-weight="bold" font-family="Courier New, monospace">anchor 2</text>`;
+      }
+    }
 
     const dimS = [];
     for (let k = 0; k < nBulbs; k++) dimS.push(startA + k * spacingM);
@@ -1319,9 +1386,31 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
     }
 
     g += `<text x="${rowLabX}" y="${yDimBulb - 6}" ${rowLabStyle}>bulb to bulb</text>`;
+    if (catEntry && dStartChord > 1e-6) {
+      g += svgHorizDim(
+        xAt(barLeftS),
+        xAt(0),
+        yDimBulb,
+        yWitnessBulb,
+        `anchor1→1 ${formatLenM(dStartChord)}`,
+        24,
+        pdfSegDimOpts
+      );
+    }
     for (let i = 1; i < nBulbs; i++) {
       const dlen = cum[i] - cum[i - 1];
       g += svgHorizDim(xAt(cum[i - 1]), xAt(cum[i]), yDimBulb, yWitnessBulb, formatLenM(dlen), 20, pdfSegDimOpts);
+    }
+    if (catEntry && dEndChord > 1e-6) {
+      g += svgHorizDim(
+        xAt(barEnd),
+        xAt(barRightS),
+        yDimBulb,
+        yWitnessBulb,
+        `${nBulbs}→anchor2 ${formatLenM(dEndChord)}`,
+        24,
+        pdfSegDimOpts
+      );
     }
 
     let yCursorAfterRow;
@@ -1351,6 +1440,21 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
         lastAbsDimY = yAbsDim;
         yAbsWitness = yAbsDim + absRowGap;
       }
+      if (catEntry && (dStartChord > 1e-6 || dEndChord > 1e-6)) {
+        const yAbsDim = yAbsWitness + absDimDepth;
+        const wallTotal = dStartChord + barEnd + dEndChord;
+        g += svgHorizDim(
+          xAt(barLeftS),
+          xAt(barRightS),
+          yAbsDim,
+          yAbsWitness,
+          `anchor1→anchor2 ${formatLenM(wallTotal)}`,
+          60,
+          { witnessTopHi: yWitnessBulb }
+        );
+        lastAbsDimY = yAbsDim;
+        yAbsWitness = yAbsDim + absRowGap;
+      }
       const absLabelY = absBlockTop + (lastAbsDimY - absBlockTop) * 0.52 + 3;
       g += `<text x="${rowLabX}" y="${absLabelY}" ${rowLabStyle}>absolute</text>`;
       yCursorAfterRow = yAbsWitness + 16;
@@ -1358,7 +1462,21 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
       g += svgHorizDim(xAt(0), xAt(barEnd), yDimTotal, yWitnessTot, `S=${formatLenM(barEnd)}`, 48, {
         witnessTopHi: yWitnessBulb
       });
-      yCursorAfterRow = yDimTotal + 24;
+      if (catEntry && (dStartChord > 1e-6 || dEndChord > 1e-6)) {
+        const wallTotal = dStartChord + barEnd + dEndChord;
+        g += svgHorizDim(
+          xAt(barLeftS),
+          xAt(barRightS),
+          yDimTotal + 22,
+          yWitnessTot,
+          `anchor1→anchor2 ${formatLenM(wallTotal)}`,
+          60,
+          { witnessTopHi: yWitnessBulb }
+        );
+        yCursorAfterRow = yDimTotal + 48;
+      } else {
+        yCursorAfterRow = yDimTotal + 24;
+      }
     }
 
     if (serverTowardCurveEnd) {
@@ -1460,19 +1578,75 @@ function updateDimmerSliderHints() {
   }
 }
 
+function disposeDimmerChild(o) {
+  if (o.isLine || o.isMesh) {
+    if (o.geometry && (o.isLine || (o.geometry !== dimmerStickGeo))) o.geometry.dispose();
+    if (o.material && (o.isLine || (o.material !== dimmerStickMat && o.material !== dimmerStickMatPast))) {
+      tunedLineMats.delete(o.material);
+      o.material.dispose();
+    }
+  }
+}
+
+function buildPolylineLineMaterial(opts) {
+  const m = new THREE.LineBasicMaterial({
+    color: opts.color,
+    transparent: true,
+    opacity: opts.opacity,
+    depthTest: opts.depthTest !== undefined ? opts.depthTest : false,
+    linewidth: parseFloat(document.getElementById('lineWidth').value)
+  });
+  m.depthWrite = false;
+  tunedLineMats.add(m);
+  return m;
+}
+
+/** Draw the magenta hang polyline + anchor chord segments for one row, no dimmers. */
+function addPolylineForLid(lid) {
+  const sorted = LINE_SORTED_BY_LINEID.get(lid);
+  if (!sorted || sorted.length < 2) return;
+  const pts = polylineMountsScene(sorted);
+  const coreMat = buildPolylineLineMaterial({ color: 0xff44aa, opacity: 0.32 });
+  const coreLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), coreMat);
+  coreLine.renderOrder = 40;
+  dimmerGroup.add(coreLine);
+  const catEntry = CAT_BY_LINE.get(lid);
+  if (catEntry) {
+    const firstBulb = sorted[0];
+    const dE1 = csvDist3(catEntry.e1, firstBulb);
+    const dE2 = csvDist3(catEntry.e2, firstBulb);
+    const startA = dE1 <= dE2 ? catEntry.e1 : catEntry.e2;
+    const endA = startA === catEntry.e1 ? catEntry.e2 : catEntry.e1;
+    const startScene = csvToSceneVec(startA.px, startA.py, startA.pz);
+    const endScene = csvToSceneVec(endA.px, endA.py, endA.pz);
+    const anchorMat = buildPolylineLineMaterial({ color: 0xff44aa, opacity: 0.28 });
+    const startSeg = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([startScene, pts[0]]),
+      anchorMat
+    );
+    startSeg.renderOrder = 40;
+    dimmerGroup.add(startSeg);
+    const endSeg = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([pts[pts.length - 1], endScene]),
+      anchorMat
+    );
+    endSeg.renderOrder = 40;
+    dimmerGroup.add(endSeg);
+  }
+}
+
 function rebuildDimmerMarkers() {
   const hintEl = document.getElementById('dimmerCountHint');
   for (let i = dimmerGroup.children.length - 1; i >= 0; i--) {
     const o = dimmerGroup.children[i];
     dimmerGroup.remove(o);
-    if (o.isLine) {
-      if (o.geometry) o.geometry.dispose();
-      if (o.material) o.material.dispose();
-    }
+    disposeDimmerChild(o);
   }
   const idx = lineFilterSliderIdx();
   if (idx < 0 || idx >= lineIDs.length) {
-    dimmerGroup.visible = false;
+    for (let li = 0; li < lineIDs.length; li++) addPolylineForLid(lineIDs[li]);
+    dimmerGroup.visible = dimmerGroup.children.length > 0;
+    dimmerGroup.renderOrder = 40;
     if (hintEl) {
       hintEl.style.display = 'none';
       hintEl.textContent = '';
@@ -1528,20 +1702,8 @@ function rebuildDimmerMarkers() {
     cumExt = cumCore;
   }
 
-  const lineMatCore = new THREE.LineBasicMaterial({
-    color: 0xff44aa,
-    transparent: true,
-    opacity: 0.38,
-    depthTest: false
-  });
-  lineMatCore.depthWrite = false;
-  const lineMatExt = new THREE.LineBasicMaterial({
-    color: 0xffcc66,
-    transparent: true,
-    opacity: 0.52,
-    depthTest: false
-  });
-  lineMatExt.depthWrite = false;
+  const lineMatCore = buildPolylineLineMaterial({ color: 0xff44aa, opacity: 0.38 });
+  const lineMatExt = buildPolylineLineMaterial({ color: 0xffcc66, opacity: 0.52 });
 
   const coreLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMatCore);
   coreLine.renderOrder = 40;
@@ -1555,6 +1717,30 @@ function rebuildDimmerMarkers() {
     dimmerGroup.add(extSeg);
   }
 
+  const catEntry = CAT_BY_LINE.get(lineIDs[idx]);
+  if (catEntry && pts.length >= 1) {
+    const firstBulb = sorted[0];
+    const dE1ToFirst = csvDist3(catEntry.e1, firstBulb);
+    const dE2ToFirst = csvDist3(catEntry.e2, firstBulb);
+    const startAnchor = dE1ToFirst <= dE2ToFirst ? catEntry.e1 : catEntry.e2;
+    const endAnchor = startAnchor === catEntry.e1 ? catEntry.e2 : catEntry.e1;
+    const startScene = csvToSceneVec(startAnchor.px, startAnchor.py, startAnchor.pz);
+    const endScene = csvToSceneVec(endAnchor.px, endAnchor.py, endAnchor.pz);
+    const anchorMat = buildPolylineLineMaterial({ color: 0xff44aa, opacity: 0.32 });
+    const startSeg = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([startScene, pts[0]]),
+      anchorMat
+    );
+    startSeg.renderOrder = 40;
+    dimmerGroup.add(startSeg);
+    const endSeg = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([pts[n - 1], endScene]),
+      anchorMat
+    );
+    endSeg.renderOrder = 40;
+    dimmerGroup.add(endSeg);
+  }
+
   let onCore = 0;
   let pastEnd = 0;
   for (let k = 0; k < nBulbs; k++) {
@@ -1565,6 +1751,10 @@ function rebuildDimmerMarkers() {
     mesh.quaternion.setFromUnitVectors(dimmerUpRef, tangent);
     mesh.position.copy(p);
     mesh.renderOrder = 41;
+    {
+      const f = getPointScaleFactor();
+      mesh.scale.set(f, 1, f);
+    }
     dimmerGroup.add(mesh);
     if (past) pastEnd++;
     else onCore++;
@@ -1631,6 +1821,10 @@ function rebuildCatenaryMarkers() {
       py: c.e2.py,
       pz: c.e2.pz
     };
+    const f = getPointScaleFactor();
+    m0.scale.setScalar(f);
+    m1.scale.setScalar(f);
+    m2.scale.setScalar(f);
     catenaryMarkersGroup.add(m0, m1, m2);
   }
   catenaryMarkersGroup.visible = any;
@@ -1911,18 +2105,71 @@ document.getElementById('colorMode').addEventListener('change', e => {
   colorMode = e.target.value;
   refresh();
 });
+/** Master scale for points / dimmers / sphere markers tied to the Point/dimmer slider. */
+function getPointScaleFactor() {
+  const el = document.getElementById('ptSize');
+  if (!el) return 1;
+  const v = parseFloat(el.value);
+  return Number.isFinite(v) && v > 0 ? v / 4 : 1;
+}
+
+function applyPointScaleToScene() {
+  const f = getPointScaleFactor();
+  catenaryMarkersGroup.traverse(o => {
+    if (o.isMesh && o.userData && o.userData.catHover) o.scale.setScalar(f);
+  });
+  curveMidpointsGroup.traverse(o => {
+    if (o.isMesh && o.geometry === curveCenterSphereGeo) o.scale.setScalar(f);
+  });
+  dimmerGroup.traverse(o => {
+    if (o.isMesh && o.geometry === dimmerStickGeo) {
+      o.scale.set(f, 1, f);
+    }
+  });
+  highlightMesh.scale.setScalar(f);
+}
+
 document.getElementById('ptSize').addEventListener('input', e => {
-  ptMat.size = parseFloat(e.target.value) * 0.02;
+  const v = parseFloat(e.target.value);
+  ptMat.size = v * 0.02;
+  const hint = document.getElementById('ptSizeHint');
+  if (hint) hint.textContent = v.toFixed(1);
+  applyPointScaleToScene();
+});
+function applyLineWidthToTuned(v) {
+  for (const m of tunedLineMats) {
+    if (m && 'linewidth' in m) m.linewidth = v;
+  }
+}
+document.getElementById('lineWidth').addEventListener('input', e => {
+  const v = parseFloat(e.target.value);
+  applyLineWidthToTuned(v);
+  const hint = document.getElementById('lineWidthHint');
+  if (hint) hint.textContent = v.toFixed(1).replace(/\.0$/, '');
 });
 document.getElementById('lineOp').addEventListener('input', e => {
   lineMat.opacity = parseFloat(e.target.value) / 100;
 });
 
+{
+  const sHint = document.getElementById('ptSizeHint');
+  if (sHint) sHint.textContent = parseFloat(document.getElementById('ptSize').value).toFixed(1);
+  const lHint = document.getElementById('lineWidthHint');
+  if (lHint) lHint.textContent = parseFloat(document.getElementById('lineWidth').value).toFixed(1).replace(/\.0$/, '');
+}
+
 // Hover dimension: highlighted drop + label
 const hoverDropPos = new Float32Array(6);
 const hoverDropGeo = new THREE.BufferGeometry();
 hoverDropGeo.setAttribute('position', new THREE.BufferAttribute(hoverDropPos, 3));
-const hoverDropMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95, depthTest: false });
+const hoverDropMat = new THREE.LineBasicMaterial({
+  color: 0xffffff,
+  transparent: true,
+  opacity: 0.95,
+  depthTest: false,
+  linewidth: parseFloat(document.getElementById('lineWidth').value)
+});
+tunedLineMats.add(hoverDropMat);
 const hoverDropLine = new THREE.LineSegments(hoverDropGeo, hoverDropMat);
 hoverDropLine.visible = false;
 hoverDropLine.renderOrder = 20;
@@ -1946,10 +2193,23 @@ const highlightMesh = new THREE.Mesh(
   new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })
 );
 highlightMesh.visible = false;
+highlightMesh.scale.setScalar(getPointScaleFactor());
 scene.add(highlightMesh);
 
 function isAxisIndicatorHeader(h) {
   return /AmI/i.test(h) && /axis/i.test(h) && /indicator/i.test(h);
+}
+
+function isCatenaryHeader(h) {
+  return (
+    /^cat[_-]/i.test(h) ||
+    /^caten[_-]?length/i.test(h) ||
+    /^catentofloor$/i.test(String(h).trim())
+  );
+}
+
+function shouldHideHeaderInTooltip(h) {
+  return isAxisIndicatorHeader(h) || isCatenaryHeader(h);
 }
 
 function formatCatenaryMarkerTooltip(ud) {
@@ -1961,9 +2221,12 @@ function formatCatenaryMarkerTooltip(ud) {
 }
 
 function formatTooltip(d) {
-  const lines = HEADERS.filter(h => !isAxisIndicatorHeader(h)).map(
+  const lines = HEADERS.filter(h => !shouldHideHeaderInTooltip(h)).map(
     h => `${h}: ${d._raw[h] ?? ''}`
   );
+  if (Number.isFinite(d._indexInLine) && !Number.isFinite(d.bulbonline)) {
+    lines.push(`bulb index in line: ${d._indexInLine}`);
+  }
   const { prev, next } = rowNeighbors(d);
   lines.push('--- hang spacing along row (bulbonline · metres) ---');
   lines.push(`plan   ${formatPitchChainGraphic(prev, d, next, distPlanHang)}`);
