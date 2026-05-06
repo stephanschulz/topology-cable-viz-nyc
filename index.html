@@ -129,7 +129,7 @@
   </div>
   <div class="hint">
     <b>Cable</b>: <code id="cableKeyHint">Bulbcablelength(M)</code> (auto-detected from header)<br>
-    Scene = Boston convention: <code>X = mirror(x)</code>, <code>Y = z − zMax</code> (0 = ceiling), <code>Z = y</code>
+    3D view uses CSV metres directly: <code>X = position_x</code>, <code>Y = position_z</code>, <code>Z = position_y</code> (cable drop along −Y)
   </div>
   </div>
 </div>
@@ -148,7 +148,7 @@
 
 <div id="info">
   Drag orbit &middot; Scroll zoom &middot; Right-drag pan &middot; Hover point<br>
-  <span style="color:#444">Serve folder with a static server &middot; Data: <code id="dataFileHint">April23_001.csv</code> · <code>?data=other.csv</code></span>
+  <span style="color:#444">Serve folder with a static server &middot; Data: <code id="dataFileHint">…</code> (hard-coded; change in <code>index.html</code> &rarr; <code>DATA_FILE</code>)</span>
 </div>
 
 <div id="rigStats" aria-label="Rig statistics"></div>
@@ -180,6 +180,17 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+// =====================================================================
+// CSV SOURCE — change this single line to point at a different dataset.
+// Bulb mounts and per-lineID catenary geometry are read from the same file.
+const DATA_FILE = 'May5_003.csv';
+// =====================================================================
+
+{
+  const fHint = document.getElementById('dataFileHint');
+  if (fHint) fHint.textContent = DATA_FILE;
+}
 
 const errEl = document.getElementById('err');
 function showErr(msg) {
@@ -320,18 +331,16 @@ function buildRecord(row, headers, cableKey, lineIdHeader) {
   return o;
 }
 
-/** Scene coords aligned with Boston topology-cable-viz:
- *  X = mirrored plan x (short axis), Z = position_y (long axis),
- *  Y = (position_z − zMax) so ceiling reference is Y=0 and longer cables go more negative (same “feel” as y = −pz with ceiling at 0). */
-function applySceneCoords(d, zMax, minPx, maxPx) {
-  d.sx = minPx + maxPx - d.px;
-  d.syMount = d.pz - zMax;
-  d.syBulb = d.pz - d.cable - zMax;
+/** Scene coords = CSV metres (Three.js Y-up): X ← position_x, Y ← position_z, Z ← position_y. */
+function applySceneCoords(d) {
+  d.sx = d.px;
+  d.syMount = d.pz;
+  d.syBulb = d.pz - d.cable;
   d.sz = d.py;
 }
 
-function csvToSceneVec(px, py, pz, zMaxRef, minPxRef, maxPxRef) {
-  return new THREE.Vector3(minPxRef + maxPxRef - px, pz - zMaxRef, py);
+function csvToSceneVec(px, py, pz) {
+  return new THREE.Vector3(px, pz, py);
 }
 
 /** Catenary steel polyline: sag center + two endpoints (CSV metres); one entry per lineID. */
@@ -387,9 +396,7 @@ function buildCatenaryMapFromRows(rows, headers) {
 }
 
 let HEADERS = [];
-const DATA_FILE =
-  new URLSearchParams(window.location.search).get('data') || 'April23_001.csv';
-/** Per–lineID catenary geometry from CSV (optional second file via ?catData=). */
+/** Per–lineID catenary geometry, sourced from the same CSV. */
 let CAT_BY_LINE = new Map();
 let ALL = [];
 let VIZ = [];
@@ -412,37 +419,15 @@ try {
   CABLE_KEY = pickCableKey(HEADERS);
   const hHint = document.getElementById('cableKeyHint');
   if (hHint) hHint.textContent = CABLE_KEY;
-  const fHint = document.getElementById('dataFileHint');
-  if (fHint) fHint.textContent = DATA_FILE;
   const lineIdHeader = lineIdHeaderFromHeaders(HEADERS);
   ALL = parsed.rows.map(r => buildRecord(r, HEADERS, CABLE_KEY, lineIdHeader));
   VIZ = ALL.filter(d => !d.isGizmo);
   if (VIZ.length === 0) throw new Error('No data rows in ' + DATA_FILE);
   if (VIZ.length === ALL.length) console.warn('No gizmo/axis rows (AmI_*…*indicator=True) -- orientation cross hidden.');
-  const _zMax = Math.max(...VIZ.map(d => d.pz));
-  const _minPx = Math.min(...VIZ.map(d => d.px));
-  const _maxPx = Math.max(...VIZ.map(d => d.px));
-  for (const d of ALL) applySceneCoords(d, _zMax, _minPx, _maxPx);
+  for (const d of ALL) applySceneCoords(d);
 
   CAT_BY_LINE = buildCatenaryMapFromRows(parsed.rows, HEADERS);
-  if (CAT_BY_LINE.size === 0) {
-    const catFile =
-      new URLSearchParams(window.location.search).get('catData') || 'May5_003.csv';
-    if (catFile !== DATA_FILE) {
-      try {
-        const cr = await fetch(catFile, { cache: 'no-cache' });
-        if (cr.ok) {
-          const cp = parseCSV(await cr.text());
-          CAT_BY_LINE = buildCatenaryMapFromRows(cp.rows, cp.headers);
-          if (CAT_BY_LINE.size > 0) console.info('[catenary markers]', CAT_BY_LINE.size, 'lines from', catFile);
-        }
-      } catch (e) {
-        console.warn('[catenary markers] optional load', catFile, e.message || e);
-      }
-    }
-  } else {
-    console.info('[catenary markers]', CAT_BY_LINE.size, 'lines from', DATA_FILE);
-  }
+  console.info('[catenary markers]', CAT_BY_LINE.size, 'lines from', DATA_FILE);
 } catch (e) {
   showErr('Could not load ' + DATA_FILE + '.\n\n' + e.message + '\n\nServe this folder with a static server (e.g. python3 -m http.server).');
   throw e;
@@ -817,8 +802,8 @@ const minPy = Math.min(...pyVals);
 const maxPy = Math.max(...pyVals);
 const cxMid = (minPx + maxPx) / 2;
 const czMid = (minPy + maxPy) / 2;
-/** Boston-style: ceiling / plan reference at Y = 0 (data z = zMax). */
-const ceilingY = 0;
+/** Ceiling reference plane at top of rig (CSV position_z = zMax → scene Y). */
+const ceilingPlaneY = zMax;
 const minSceneY = Math.min(...VIZ.map(d => d.syBulb), ...VIZ.map(d => d.syMount));
 let GIZMO_ARM_LEN = 0;
 
@@ -867,12 +852,15 @@ const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x0a0a0f, 0.008);
 
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 500);
-camera.position.set(cxMid - 18, 10, czMid + 12);
+{
+  const rigMidY = (ceilingPlaneY + minSceneY) / 2;
+  camera.position.set(cxMid - 18, rigMidY + 8, czMid + 12);
+}
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
-controls.target.set(cxMid, (ceilingY + minSceneY) / 2, czMid);
+controls.target.set(cxMid, (ceilingPlaneY + minSceneY) / 2, czMid);
 controls.update();
 
 function dropColor(c) {
@@ -1610,9 +1598,9 @@ function rebuildCatenaryMarkers() {
   for (const [lid, c] of CAT_BY_LINE) {
     if (!showAll && lid !== onlyLid) continue;
     any = true;
-    const p0 = csvToSceneVec(c.center.px, c.center.py, c.center.pz, zMax, minPx, maxPx);
-    const p1 = csvToSceneVec(c.e1.px, c.e1.py, c.e1.pz, zMax, minPx, maxPx);
-    const p2 = csvToSceneVec(c.e2.px, c.e2.py, c.e2.pz, zMax, minPx, maxPx);
+    const p0 = csvToSceneVec(c.center.px, c.center.py, c.center.pz);
+    const p1 = csvToSceneVec(c.e1.px, c.e1.py, c.e1.pz);
+    const p2 = csvToSceneVec(c.e2.px, c.e2.py, c.e2.pz);
     const m0 = new THREE.Mesh(catMarkerGeo, catMarkerMat);
     m0.renderOrder = 48;
     m0.position.copy(p0);
@@ -1621,10 +1609,7 @@ function rebuildCatenaryMarkers() {
       lineID: lid,
       px: c.center.px,
       py: c.center.py,
-      pz: c.center.pz,
-      sx: p0.x,
-      sy: p0.y,
-      sz: p0.z
+      pz: c.center.pz
     };
     const m1 = new THREE.Mesh(catMarkerGeo, catMarkerMat);
     m1.renderOrder = 48;
@@ -1634,10 +1619,7 @@ function rebuildCatenaryMarkers() {
       lineID: lid,
       px: c.e1.px,
       py: c.e1.py,
-      pz: c.e1.pz,
-      sx: p1.x,
-      sy: p1.y,
-      sz: p1.z
+      pz: c.e1.pz
     };
     const m2 = new THREE.Mesh(catMarkerGeo, catMarkerMat);
     m2.renderOrder = 48;
@@ -1647,10 +1629,7 @@ function rebuildCatenaryMarkers() {
       lineID: lid,
       px: c.e2.px,
       py: c.e2.py,
-      pz: c.e2.pz,
-      sx: p2.x,
-      sy: p2.y,
-      sz: p2.z
+      pz: c.e2.pz
     };
     catenaryMarkersGroup.add(m0, m1, m2);
   }
@@ -1734,21 +1713,16 @@ function rebuildVisibleGeometry() {
   rebuildCatenaryMarkers();
 }
 
-function mirrorPlanX(x) {
-  return minPx + maxPx - x;
-}
-
 const gizmoRows = findGizmoRows();
 const floorGridY = gizmoRows.O != null ? gizmoRows.O.syMount : minSceneY - 0.5;
 
-// Ceiling reference at Y = 0 (Boston: ceiling y = 0); plan uses mirrored X like Boston room outline
 const ceilW = Math.abs(maxPx - minPx) + 1.0;
 const ceilD = Math.abs(maxPy - minPy) + 1.0;
 const ceilGeo = new THREE.PlaneGeometry(ceilW, ceilD);
 const ceilMat = new THREE.MeshBasicMaterial({ color: 0x111122, transparent: true, opacity: 0.25, side: THREE.DoubleSide });
 const ceiling = new THREE.Mesh(ceilGeo, ceilMat);
 ceiling.rotation.x = Math.PI / 2;
-ceiling.position.set(cxMid, ceilingY, czMid);
+ceiling.position.set(cxMid, ceilingPlaneY, czMid);
 scene.add(ceiling);
 
 const gridHelper = new THREE.GridHelper(Math.max(ceilW, ceilD), 20, 0x223344, 0x112233);
@@ -1756,17 +1730,17 @@ gridHelper.position.set(cxMid, floorGridY, czMid);
 scene.add(gridHelper);
 
 const roomPts = [
-  new THREE.Vector3(mirrorPlanX(minPx - 0.15), ceilingY, minPy - 0.15),
-  new THREE.Vector3(mirrorPlanX(maxPx + 0.15), ceilingY, minPy - 0.15),
-  new THREE.Vector3(mirrorPlanX(maxPx + 0.15), ceilingY, maxPy + 0.15),
-  new THREE.Vector3(mirrorPlanX(minPx - 0.15), ceilingY, maxPy + 0.15),
-  new THREE.Vector3(mirrorPlanX(minPx - 0.15), ceilingY, minPy - 0.15),
+  new THREE.Vector3(minPx - 0.15, ceilingPlaneY, minPy - 0.15),
+  new THREE.Vector3(maxPx + 0.15, ceilingPlaneY, minPy - 0.15),
+  new THREE.Vector3(maxPx + 0.15, ceilingPlaneY, maxPy + 0.15),
+  new THREE.Vector3(minPx - 0.15, ceilingPlaneY, maxPy + 0.15),
+  new THREE.Vector3(minPx - 0.15, ceilingPlaneY, minPy - 0.15),
 ];
 scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(roomPts), new THREE.LineBasicMaterial({ color: 0x334466 })));
 
 {
   const serverPz = 6;
-  const serverScene = csvToSceneVec(SERVER_ROOM_CSV.px, SERVER_ROOM_CSV.py, serverPz, zMax, minPx, maxPx);
+  const serverScene = csvToSceneVec(SERVER_ROOM_CSV.px, SERVER_ROOM_CSV.py, serverPz);
   serverScene.x += 2.8;
   serverScene.y = floorGridY + 0.06;
   serverScene.z += 2.2;
@@ -1859,11 +1833,12 @@ if (chkGizmo) {
 
 function buildLegend(mode) {
   const el = document.getElementById('legend');
-  el.innerHTML = `<div style="color:#aaa;margin-bottom:6px">Bounds (CSV)</div>
+  el.innerHTML = `<div style="color:#cde;margin-bottom:6px">Data: <code style="color:#fff">${DATA_FILE}</code></div>
+    <div style="color:#aaa;margin-bottom:6px">Bounds (CSV)</div>
     <div class="legend-row">position_x</div><div style="margin-left:18px">${minPx.toFixed(2)} … ${maxPx.toFixed(2)} m</div>
     <div class="legend-row">position_y</div><div style="margin-left:18px">${minPy.toFixed(2)} … ${maxPy.toFixed(2)} m</div>
     <div class="legend-row">position_z</div><div style="margin-left:18px">${zMin.toFixed(2)} … ${zMax.toFixed(2)} m</div>
-    <div style="margin-top:8px;color:#669">Ceiling plane scene Y = 0 (CSV z − ${zMax.toFixed(3)} m)</div>
+    <div style="margin-top:8px;color:#669">Ceiling plane at scene Y = ${ceilingPlaneY.toFixed(3)} m (= max CSV position_z)</div>
     <div style="margin-top:4px;color:#666;font-size:10px">cable: ${dropMin.toFixed(2)} – ${dropMax.toFixed(2)} m</div>
     <div style="margin-top:6px;color:#7a7">Gizmo: RGB = CSV +X, +Y, +Z (arms scaled to ≈10% of size${typeof GIZMO_ARM_LEN === 'number' && GIZMO_ARM_LEN > 0 ? `, max ${GIZMO_ARM_LEN.toFixed(1)} m` : ''})</div>
     <div style="margin-top:4px;color:#666;font-size:10px">Floor grid at scene Y = ${floorGridY.toFixed(3)} m (CSV origin ${gizmoRows.O ? '0,0,0' : '—, fallback'})</div>`;
@@ -1981,8 +1956,7 @@ function formatCatenaryMarkerTooltip(ud) {
   return [
     ud.role,
     `lineID ${ud.lineID}`,
-    `CSV (position_x, position_y, position_z): (${ud.px.toFixed(3)}, ${ud.py.toFixed(3)}, ${ud.pz.toFixed(3)}) m`,
-    `Scene (X, Y, Z): (${ud.sx.toFixed(3)}, ${ud.sy.toFixed(3)}, ${ud.sz.toFixed(3)})`
+    `(position_x, position_y, position_z): (${ud.px.toFixed(3)}, ${ud.py.toFixed(3)}, ${ud.pz.toFixed(3)}) m`
   ].join('\n');
 }
 
@@ -1994,9 +1968,11 @@ function formatTooltip(d) {
   lines.push('--- hang spacing along row (bulbonline · metres) ---');
   lines.push(`plan   ${formatPitchChainGraphic(prev, d, next, distPlanHang)}`);
   lines.push(`3D     ${formatPitchChainGraphic(prev, d, next, dist3dHang)}`);
-  lines.push('--- scene (same basis as Boston viz: X=mirror(px), Y=z−zMax, Z=py) ---');
-  lines.push(`mount: (${d.sx.toFixed(3)}, ${d.syMount.toFixed(3)}, ${d.sz.toFixed(3)})`);
-  lines.push(`bulb:  (${d.sx.toFixed(3)}, ${d.syBulb.toFixed(3)}, ${d.sz.toFixed(3)})  drop: ${d.cable.toFixed(3)} m`);
+  lines.push('--- positions (CSV metres) ---');
+  lines.push(`mount: (${d.px.toFixed(3)}, ${d.py.toFixed(3)}, ${d.pz.toFixed(3)})`);
+  lines.push(
+    `bulb:  (${d.px.toFixed(3)}, ${d.py.toFixed(3)}, ${(d.pz - d.cable).toFixed(3)})  drop: ${d.cable.toFixed(3)} m`
+  );
   return lines.join('\n');
 }
 

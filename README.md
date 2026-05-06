@@ -16,7 +16,7 @@ Interactive 3D view of cable hang points from `April23_001.csv` by default (or p
 
 ![2D cable unroll](images/2d-unroll.jpg)
 
-**Scene mapping** (aligned with the Boston `topology-cable-viz` app): `X = mirror(position_x)` about the plan span, `Z = position_y`, and `Y = position_z − zMax` so the highest CSV `position_z` sits at scene **Y = 0** (ceiling plane) and longer drops extend to **more negative Y** — same convention as that app’s `y = −pz` with `pz` as depth below a ceiling at 0.
+**3D coordinates:** The WebGL view uses CSV metres directly with Three.js Y-up: **scene X** = `position_x`, **scene Y** = `position_z`, **scene Z** = `position_y`. Mounts sit at `(px, pz, py)`; cables shorten **scene Y** by `Bulbcablelength(M)` to the bulb. The translucent ceiling plane sits at **scene Y** = max CSV `position_z`.
 
 ## Run locally
 
@@ -33,7 +33,7 @@ Open [http://localhost:8000/](http://localhost:8000/) and use `index.html` at th
 
 - **Color by:** drop length, mount height (z), `lineID`, or `Universe`
 - **Point size** / **Drop line opacity** — sliders
-- **Mouse:** drag orbit, scroll zoom, right-drag pan, hover points for full CSV row + scene coordinates
+- **Mouse:** drag orbit, scroll zoom, right-drag pan, hover points for full CSV row + CSV positions (mount/bulb)
 
 ## Stack
 
