@@ -115,6 +115,14 @@
     <p class="hint" style="margin:2px 0 0 0">RGB = CSV +X, +Y, +Z (designer reference rows, scaled)</p>
   </div>
   <div>
+    <label class="gizmo-chk"><input type="checkbox" id="showObj"> Show <code>3d/Exported_Lines.obj</code></label>
+    <p id="objStatusHint" class="hint" style="margin:2px 0 0 0;color:#888">Off · drawn at OBJ raw coords (toggle to fetch)</p>
+  </div>
+  <div>
+    <label class="gizmo-chk"><input type="checkbox" id="showWalls" checked> Anchor wall polylines (<b>a1</b>/<b>a2</b>)</label>
+    <p class="hint" style="margin:2px 0 0 0">Connects every row's <code>a1</code> anchor (one wall) and every <code>a2</code> anchor (other wall) in <code>lineID</code> order.</p>
+  </div>
+  <div>
     <label>Weights export</label><br>
     <button type="button" id="exportLineWeights" style="background:#111;border:1px solid #333;color:#ccc;padding:6px 8px;font-family:inherit;font-size:12px;cursor:pointer;width:100%">Per-line weights (CSV)</button>
     <p class="hint" style="margin:4px 0 0 0">Bulb cable &amp; ethernet totals, gram breakdown per <code>lineID</code> · uses <code>indoor-weights.csv</code></p>
@@ -1016,6 +1024,10 @@ scene.add(curveMidpointsGroup);
 const catenaryMarkersGroup = new THREE.Group();
 catenaryMarkersGroup.name = 'catenarySteelMarkers';
 scene.add(catenaryMarkersGroup);
+
+const wallLinesGroup = new THREE.Group();
+wallLinesGroup.name = 'anchorWallPolylines';
+scene.add(wallLinesGroup);
 const catMarkerGeo = new THREE.SphereGeometry(0.05, 14, 14);
 const catMarkerMat = new THREE.MeshBasicMaterial({
   color: 0x66ddb3,
@@ -1249,14 +1261,11 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
     <text x="${legTextX}" y="${legTy(1)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">dimmer centre</text>
     <line x1="${legX}" y1="${legMid(2) + 5}" x2="${legX + 14}" y2="${legMid(2) - 5}" stroke="#557" stroke-width="0.85"/>
     <text x="${legTextX}" y="${legTy(2)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">${forPdf ? 'joint-dimmer link' : 'joint↔dimmer link'}</text>
-    <line x1="${legX}" y1="${legMid(3)}" x2="${legX + 22}" y2="${legMid(3)}" stroke="#111" stroke-width="5"/>
-    <line x1="${legX + 22}" y1="${legMid(3)}" x2="${legX + 42}" y2="${legMid(3)}" stroke="#a0522d" stroke-width="4" stroke-dasharray="8 5"/>
-    <text x="${legTextX}" y="${legTy(3)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">hangs · extension</text>
-    <line x1="${legX}" y1="${legMid(4)}" x2="${legX + 32}" y2="${legMid(4)}" stroke="#669" stroke-width="3" stroke-dasharray="6 4"/>
-    <text x="${legTextX}" y="${legTy(4)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">anchor chord</text>
+    <line x1="${legX}" y1="${legMid(3)}" x2="${legX + 32}" y2="${legMid(3)}" stroke="#669" stroke-width="3" stroke-dasharray="6 4"/>
+    <text x="${legTextX}" y="${legTy(3)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">anchor chord</text>
   </g>`;
 
-  let yCursor = legYTop + 5 * legRowH + 14;
+  let yCursor = legYTop + 4 * legRowH + 14;
   let allG = '';
 
   for (let si = 0; si < ids.length; si++) {
@@ -1862,6 +1871,70 @@ function rebuildCatenaryMarkers() {
   catenaryMarkersGroup.visible = any;
 }
 
+const wallA1Mat = new THREE.LineBasicMaterial({
+  color: 0x3a8bff,
+  transparent: true,
+  opacity: 0.9,
+  depthTest: false,
+  depthWrite: false
+});
+const wallA2Mat = new THREE.LineBasicMaterial({
+  color: 0xff7733,
+  transparent: true,
+  opacity: 0.9,
+  depthTest: false,
+  depthWrite: false
+});
+tunedLineMats.add(wallA1Mat);
+tunedLineMats.add(wallA2Mat);
+
+function rebuildWallLines() {
+  while (wallLinesGroup.children.length > 0) {
+    const c = wallLinesGroup.children[0];
+    wallLinesGroup.remove(c);
+    if (c.geometry && c.geometry.dispose) c.geometry.dispose();
+  }
+  if (!CAT_BY_LINE.size || !lineIDs.length) {
+    wallLinesGroup.visible = false;
+    return;
+  }
+  const a1Pts = [];
+  const a2Pts = [];
+  for (const lid of lineIDs) {
+    const cat = CAT_BY_LINE.get(lid);
+    if (!cat) continue;
+    const sorted = LINE_SORTED_BY_LINEID.get(lid);
+    if (!sorted || !sorted.length) continue;
+    const firstBl = sorted[0];
+    const dE1 = csvDist3(cat.e1, firstBl);
+    const dE2 = csvDist3(cat.e2, firstBl);
+    const a1 = dE1 <= dE2 ? cat.e1 : cat.e2;
+    const a2 = a1 === cat.e1 ? cat.e2 : cat.e1;
+    a1Pts.push(csvToSceneVec(a1.px, a1.py, a1.pz));
+    a2Pts.push(csvToSceneVec(a2.px, a2.py, a2.pz));
+  }
+  if (a1Pts.length < 2 && a2Pts.length < 2) {
+    wallLinesGroup.visible = false;
+    return;
+  }
+  if (a1Pts.length >= 2) {
+    const g1 = new THREE.BufferGeometry().setFromPoints(a1Pts);
+    const l1 = new THREE.Line(g1, wallA1Mat);
+    l1.renderOrder = 47;
+    l1.name = 'wallA1';
+    wallLinesGroup.add(l1);
+  }
+  if (a2Pts.length >= 2) {
+    const g2 = new THREE.BufferGeometry().setFromPoints(a2Pts);
+    const l2 = new THREE.Line(g2, wallA2Mat);
+    l2.renderOrder = 47;
+    l2.name = 'wallA2';
+    wallLinesGroup.add(l2);
+  }
+  const chk = document.getElementById('showWalls');
+  wallLinesGroup.visible = chk ? !!chk.checked : true;
+}
+
 function rebuildVisibleGeometry() {
   const filt = lineFilterSliderIdx();
   let vis;
@@ -1937,6 +2010,7 @@ function rebuildVisibleGeometry() {
   pointCloud.visible = n > 0;
   dropLines.visible = n > 0;
   rebuildCatenaryMarkers();
+  rebuildWallLines();
 }
 
 const gizmoRows = findGizmoRows();
@@ -2054,6 +2128,129 @@ if (chkGizmo) {
   setCsvGizmoVisible(chkGizmo.checked);
   chkGizmo.addEventListener('change', e => {
     setCsvGizmoVisible(e.target.checked);
+  });
+}
+
+const chkWalls = document.getElementById('showWalls');
+if (chkWalls) {
+  wallLinesGroup.visible = chkWalls.checked && wallLinesGroup.children.length > 0;
+  chkWalls.addEventListener('change', e => {
+    wallLinesGroup.visible = !!e.target.checked && wallLinesGroup.children.length > 0;
+  });
+}
+
+const objGroup = new THREE.Group();
+objGroup.visible = false;
+objGroup.renderOrder = 5;
+scene.add(objGroup);
+let objLoadState = 'idle';
+
+function setObjStatus(text, color) {
+  const el = document.getElementById('objStatusHint');
+  if (!el) return;
+  el.textContent = text;
+  el.style.color = color || '#888';
+}
+
+function buildObjLineSegments(text) {
+  const verts = [];
+  const segs = [];
+  const lines = text.split(/\r?\n/);
+  for (const raw of lines) {
+    if (!raw) continue;
+    if (raw.startsWith('v ')) {
+      const p = raw.split(/\s+/);
+      verts.push(parseFloat(p[1]), parseFloat(p[2]), parseFloat(p[3]));
+    } else if (raw.startsWith('l ')) {
+      const idx = raw.split(/\s+/).slice(1).map(s => parseInt(s, 10)).filter(n => Number.isFinite(n));
+      for (let i = 0; i < idx.length - 1; i++) {
+        segs.push(idx[i], idx[i + 1]);
+      }
+    }
+  }
+  if (!verts.length || !segs.length) return null;
+
+  let oMinX = Infinity, oMinY = Infinity, oMinZ = Infinity;
+  let oMaxX = -Infinity, oMaxY = -Infinity, oMaxZ = -Infinity;
+  for (let i = 0; i < verts.length; i += 3) {
+    const x = verts[i], y = verts[i + 1], z = verts[i + 2];
+    if (x < oMinX) oMinX = x; if (x > oMaxX) oMaxX = x;
+    if (y < oMinY) oMinY = y; if (y > oMaxY) oMaxY = y;
+    if (z < oMinZ) oMinZ = z; if (z > oMaxZ) oMaxZ = z;
+  }
+
+  const offX = oMinX - minPx;
+  const offY = oMaxY - zMax;
+  const offZ = oMaxZ + minPy;
+  const xMid = MIRROR.minPx + MIRROR.maxPx;
+
+  const positions = new Float32Array(segs.length * 3);
+  for (let i = 0; i < segs.length; i++) {
+    const v = (segs[i] - 1) * 3;
+    const xo = verts[v], yo = verts[v + 1], zo = verts[v + 2];
+    const csvX = xo - offX;
+    const csvY = -(zo - offZ);
+    const csvZ = yo - offY;
+    positions[i * 3] = xMid - csvX;
+    positions[i * 3 + 1] = csvZ;
+    positions[i * 3 + 2] = csvY;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  return {
+    geometry: geo,
+    objBbox: { minX: oMinX, minY: oMinY, minZ: oMinZ, maxX: oMaxX, maxY: oMaxY, maxZ: oMaxZ },
+    offsets: { offX, offY, offZ },
+    vertCount: verts.length / 3,
+    segCount: segs.length / 2
+  };
+}
+
+async function loadObjOnce() {
+  if (objLoadState === 'loaded' || objLoadState === 'loading') return;
+  objLoadState = 'loading';
+  setObjStatus('loading 3d/Exported_Lines.obj…', '#aa8');
+  try {
+    const res = await fetch('3d/Exported_Lines.obj');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    const built = buildObjLineSegments(text);
+    if (!built) throw new Error('No vertices/lines parsed');
+    const mat = new THREE.LineBasicMaterial({
+      color: 0xff3399,
+      transparent: true,
+      opacity: 0.95,
+      depthTest: false,
+      depthWrite: false
+    });
+    tunedLineMats.add(mat);
+    applyLineWidthToTuned(parseFloat(document.getElementById('lineWidth')?.value || '2'));
+    const segMesh = new THREE.LineSegments(built.geometry, mat);
+    segMesh.renderOrder = 60;
+    objGroup.add(segMesh);
+    objGroup.position.set(0, 0, 0);
+    objGroup.scale.set(1, 1, 1);
+    objLoadState = 'loaded';
+    const o = built.offsets;
+    setObjStatus(
+      `loaded · ${built.vertCount} verts · ${built.segCount} segments · ` +
+        `aligned (offX=${o.offX.toFixed(2)} offY=${o.offY.toFixed(2)} offZ=${o.offZ.toFixed(2)})`,
+      '#9c9'
+    );
+  } catch (err) {
+    objLoadState = 'error';
+    setObjStatus(`failed: ${err && err.message ? err.message : err}`, '#c66');
+  }
+}
+
+const chkObj = document.getElementById('showObj');
+if (chkObj) {
+  chkObj.addEventListener('change', async e => {
+    const want = !!e.target.checked;
+    if (want && objLoadState === 'idle') {
+      await loadObjOnce();
+    }
+    objGroup.visible = want && objLoadState === 'loaded';
   });
 }
 
