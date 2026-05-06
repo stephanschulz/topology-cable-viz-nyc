@@ -138,7 +138,7 @@
 <div id="view2d" aria-hidden="true">
   <p class="unroll-caption">
     Left = start of hang curve (<b>bulb-on-line</b> order, CSV mount path). Solid bar = hangs only; brown dashed = extension past last hang if dimmers require it.
-    Indigo dashed segments at each end show the straight chord from the wall <b>anchor</b> to the first/last bulb (CSV catenary endpoints).
+    Indigo dashed segments at each end show the straight chord from the wall anchors <b>a1</b>/<b>a2</b> to the first/last bulb (CSV catenary endpoints).
     <b>S</b> = total developed length. Segment labels are metres (e.g. <code>0.335m</code>, <code>8.710m</code>). Grey slanted lines join each bulb joint to its dimmer centre (same index).
     <b>server</b> is drawn on the side of the strip toward CSV plan (<code>4</code>, <code>11</code>) — nearer first hang vs last hang.
   </p>
@@ -1312,13 +1312,14 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
     const xAt = s => marginL + (Math.min(Math.max(barLeftS, s), barRightS) - barLeftS) * scale;
 
     const yTitle = yCursor;
-    const yBar = yCursor + 36;
+    const yBar = yCursor + (forPdf ? 90 : 36);
     const yWitnessFrom = yBar + 14;
     const yDimDimmer = yWitnessFrom + 40;
     const yWitnessBulb = yDimDimmer + 18;
     const yDimBulb = yWitnessBulb + 38;
     const yWitnessTot = yDimBulb + 8;
     const yDimTotal = yWitnessTot + 26;
+    const yBulbIdBase = forPdf ? yTitle + 18 : yBar - 26;
 
     const firstBl = sorted[0];
     const lastBl = sorted[sorted.length - 1];
@@ -1328,11 +1329,6 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
 
     let g = `<g>`;
     g += `<text x="${marginL}" y="${yTitle}" fill="#1a1a1a" font-size="13" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(title)}</text>`;
-    g += `<text x="${marginL}" y="${yBar - 8}" fill="#444" font-size="10" font-family="Courier New, monospace">${
-      forPdf
-        ? 'developed length along hang curve (arc metres to horizontal)'
-        : 'developed length along hang curve (arc metres → horizontal)'
-    }</text>`;
     g += `<text x="${rowLabX}" y="${yBar + 5}" ${rowLabStyle}>lineID ${lid}</text>`;
 
     if (dStartChord > 1e-6) {
@@ -1350,12 +1346,12 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
       if (startAnchor) {
         const xa = xAt(barLeftS);
         g += `<line x1="${xa}" y1="${yBar - tickH}" x2="${xa}" y2="${yBar + tickH}" stroke="#669" stroke-width="2"/>`;
-        g += `<text x="${xa}" y="${yBar - labelOffset}" text-anchor="middle" fill="#225" font-size="9.5" font-weight="bold" font-family="Courier New, monospace">anchor 1</text>`;
+        g += `<text x="${xa}" y="${yBar - labelOffset}" text-anchor="middle" fill="#225" font-size="9.5" font-weight="bold" font-family="Courier New, monospace">a1</text>`;
       }
       if (endAnchor) {
         const xa = xAt(barRightS);
         g += `<line x1="${xa}" y1="${yBar - tickH}" x2="${xa}" y2="${yBar + tickH}" stroke="#669" stroke-width="2"/>`;
-        g += `<text x="${xa}" y="${yBar - labelOffset}" text-anchor="middle" fill="#225" font-size="9.5" font-weight="bold" font-family="Courier New, monospace">anchor 2</text>`;
+        g += `<text x="${xa}" y="${yBar - labelOffset}" text-anchor="middle" fill="#225" font-size="9.5" font-weight="bold" font-family="Courier New, monospace">a2</text>`;
       }
     }
 
@@ -1376,7 +1372,14 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
       const x = xAt(cum[i]);
       const idLab = bulbonlineLabel(sorted[i]);
       g += `<line x1="${x}" y1="${yBar - 22}" x2="${x}" y2="${yBar + 14}" stroke="#085" stroke-width="2.2"/>`;
-      g += `<text x="${x}" y="${yBar - 26}" text-anchor="middle" fill="#042" font-size="9.5" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(idLab)}</text>`;
+      g += `<text x="${x}" y="${yBulbIdBase}" text-anchor="middle" fill="#042" font-size="9.5" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(idLab)}</text>`;
+      if (forPdf) {
+        const cab = sorted[i].cable;
+        if (Number.isFinite(cab) && cab > 1e-3) {
+          const cy = yBar - 24;
+          g += `<text x="${x}" y="${cy}" transform="rotate(-90 ${x} ${cy})" text-anchor="start" fill="#444" font-size="8" font-family="Courier New, monospace">${formatLenM(cab)}</text>`;
+        }
+      }
     }
 
     for (let k = 0; k < dimS.length; k++) {
@@ -1393,9 +1396,19 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
 
     const pdfSegDimOpts = forPdf ? { labelRotateDeg: -90 } : undefined;
     g += `<text x="${rowLabX}" y="${yDimDimmer - 6}" ${rowLabStyle}>dimmer to dimmer</text>`;
+    if (catEntry && dStartChord > 1e-6 && dimS.length > 0) {
+      const sFirstDim = dimS[0];
+      const len = sFirstDim - barLeftS;
+      g += svgHorizDim(xAt(barLeftS), xAt(sFirstDim), yDimDimmer, yWitnessFrom, formatLenM(len), 20, pdfSegDimOpts);
+    }
     for (let k = 1; k < dimS.length; k++) {
       const dlen = dimS[k] - dimS[k - 1];
       g += svgHorizDim(xAt(dimS[k - 1]), xAt(dimS[k]), yDimDimmer, yWitnessFrom, formatLenM(dlen), 20, pdfSegDimOpts);
+    }
+    if (catEntry && dEndChord > 1e-6 && dimS.length > 0) {
+      const sLastDim = dimS[dimS.length - 1];
+      const len = barRightS - sLastDim;
+      g += svgHorizDim(xAt(sLastDim), xAt(barRightS), yDimDimmer, yWitnessFrom, formatLenM(len), 20, pdfSegDimOpts);
     }
 
     g += `<text x="${rowLabX}" y="${yDimBulb - 6}" ${rowLabStyle}>bulb to bulb</text>`;
@@ -1405,8 +1418,8 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
         xAt(0),
         yDimBulb,
         yWitnessBulb,
-        `anchor1→1 ${formatLenM(dStartChord)}`,
-        24,
+        formatLenM(dStartChord),
+        20,
         pdfSegDimOpts
       );
     }
@@ -1420,8 +1433,8 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
         xAt(barRightS),
         yDimBulb,
         yWitnessBulb,
-        `${nBulbs}→anchor2 ${formatLenM(dEndChord)}`,
-        24,
+        formatLenM(dEndChord),
+        20,
         pdfSegDimOpts
       );
     }
@@ -1437,7 +1450,7 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
         const yAbsDim = yAbsWitness + absDimDepth;
         const idLab = bulbonlineLabel(sorted[i]);
         const absDimLabel = forPdf
-          ? `0-${idLab} ${formatLenM(cum[i])}`
+          ? formatLenM(cum[i])
           : `0→${idLab} ${formatLenM(cum[i])}`;
         g += svgHorizDim(xAt(0), xAt(cum[i]), yAbsDim, yAbsWitness, absDimLabel, 20, {
           witnessTopHi: yWitnessBulb
@@ -1456,13 +1469,16 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
       if (catEntry && (dStartChord > 1e-6 || dEndChord > 1e-6)) {
         const yAbsDim = yAbsWitness + absDimDepth;
         const wallTotal = dStartChord + barEnd + dEndChord;
+        const wallLabel = forPdf
+          ? `a1->a2 ${formatLenM(wallTotal)}`
+          : `a1→a2 ${formatLenM(wallTotal)}`;
         g += svgHorizDim(
           xAt(barLeftS),
           xAt(barRightS),
           yAbsDim,
           yAbsWitness,
-          `anchor1→anchor2 ${formatLenM(wallTotal)}`,
-          60,
+          wallLabel,
+          50,
           { witnessTopHi: yWitnessBulb }
         );
         lastAbsDimY = yAbsDim;
@@ -1477,13 +1493,16 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
       });
       if (catEntry && (dStartChord > 1e-6 || dEndChord > 1e-6)) {
         const wallTotal = dStartChord + barEnd + dEndChord;
+        const wallLabel = forPdf
+          ? `a1->a2 ${formatLenM(wallTotal)}`
+          : `a1→a2 ${formatLenM(wallTotal)}`;
         g += svgHorizDim(
           xAt(barLeftS),
           xAt(barRightS),
           yDimTotal + 22,
           yWitnessTot,
-          `anchor1→anchor2 ${formatLenM(wallTotal)}`,
-          60,
+          wallLabel,
+          50,
           { witnessTopHi: yWitnessBulb }
         );
         yCursorAfterRow = yDimTotal + 48;
