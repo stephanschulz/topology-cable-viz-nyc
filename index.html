@@ -121,7 +121,7 @@
   </div>
   <div class="hint">
     <b>Cable</b>: <code id="cableKeyHint">Bulbcablelength(M)</code> (auto-detected from header)<br>
-    3D view uses CSV metres directly: <code>X = position_x</code>, <code>Y = position_z</code>, <code>Z = position_y</code> (cable drop along −Y)
+    3D view uses CSV metres with plan-X mirrored so designer +X reads top-left in plan view: <code>X = mirror(position_x)</code>, <code>Y = position_z</code>, <code>Z = position_y</code> (cable drop along −Y). Tooltips/legend always show raw CSV values.
   </div>
   <div style="margin-top:8px;padding-top:8px;border-top:1px solid #333">
     <div style="color:#888;font-size:10px;margin-bottom:4px;letter-spacing:0.5px">DISPLAY</div>
@@ -333,16 +333,24 @@ function buildRecord(row, headers, cableKey, lineIdHeader) {
   return o;
 }
 
-/** Scene coords = CSV metres (Three.js Y-up): X ← position_x, Y ← position_z, Z ← position_y. */
+/** Plan-X mirror so the designer's CSV +X (the positive-x corner of the room) reads as
+ *  TOP-LEFT in the default plan view. Boston-app convention; min/max set after data loads. */
+const MIRROR = { minPx: 0, maxPx: 0 };
+function flipPlanX(px) {
+  return MIRROR.minPx + MIRROR.maxPx - px;
+}
+
+/** Scene coords (Three.js Y-up):
+ *  X ← mirror(position_x), Y ← position_z (height), Z ← position_y (long axis). */
 function applySceneCoords(d) {
-  d.sx = d.px;
+  d.sx = flipPlanX(d.px);
   d.syMount = d.pz;
   d.syBulb = d.pz - d.cable;
   d.sz = d.py;
 }
 
 function csvToSceneVec(px, py, pz) {
-  return new THREE.Vector3(px, pz, py);
+  return new THREE.Vector3(flipPlanX(px), pz, py);
 }
 
 /** Catenary steel polyline: sag center + two endpoints (CSV metres); one entry per lineID. */
@@ -426,6 +434,11 @@ try {
   VIZ = ALL.filter(d => !d.isGizmo);
   if (VIZ.length === 0) throw new Error('No data rows in ' + DATA_FILE);
   if (VIZ.length === ALL.length) console.warn('No gizmo/axis rows (AmI_*…*indicator=True) -- orientation cross hidden.');
+  {
+    const pxs = VIZ.map(d => d.px);
+    MIRROR.minPx = Math.min(...pxs);
+    MIRROR.maxPx = Math.max(...pxs);
+  }
   for (const d of ALL) applySceneCoords(d);
 
   CAT_BY_LINE = buildCatenaryMapFromRows(parsed.rows, HEADERS);
@@ -1924,11 +1937,11 @@ gridHelper.position.set(cxMid, floorGridY, czMid);
 scene.add(gridHelper);
 
 const roomPts = [
-  new THREE.Vector3(minPx - 0.15, ceilingPlaneY, minPy - 0.15),
-  new THREE.Vector3(maxPx + 0.15, ceilingPlaneY, minPy - 0.15),
-  new THREE.Vector3(maxPx + 0.15, ceilingPlaneY, maxPy + 0.15),
-  new THREE.Vector3(minPx - 0.15, ceilingPlaneY, maxPy + 0.15),
-  new THREE.Vector3(minPx - 0.15, ceilingPlaneY, minPy - 0.15),
+  new THREE.Vector3(flipPlanX(minPx) + 0.15, ceilingPlaneY, minPy - 0.15),
+  new THREE.Vector3(flipPlanX(maxPx) - 0.15, ceilingPlaneY, minPy - 0.15),
+  new THREE.Vector3(flipPlanX(maxPx) - 0.15, ceilingPlaneY, maxPy + 0.15),
+  new THREE.Vector3(flipPlanX(minPx) + 0.15, ceilingPlaneY, maxPy + 0.15),
+  new THREE.Vector3(flipPlanX(minPx) + 0.15, ceilingPlaneY, minPy - 0.15),
 ];
 scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(roomPts), new THREE.LineBasicMaterial({ color: 0x334466 })));
 
