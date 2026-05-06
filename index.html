@@ -291,7 +291,11 @@ function getVal(row, h, def) {
   return def;
 }
 
-function buildRecord(row, headers, cableKey) {
+function lineIdHeaderFromHeaders(headers) {
+  return colFind(headers, h => /^lineid$/i.test(String(h).trim())) || KEY.lineID;
+}
+
+function buildRecord(row, headers, cableKey, lineIdHeader) {
   const o = { _raw: { ...row } };
   for (const h of headers) o['_' + h] = row[h];
   o.index = num(row[KEY.index]);
@@ -307,7 +311,7 @@ function buildRecord(row, headers, cableKey) {
     colFind(headers, h => /ethernet/i.test(h)) ||
     colFind(headers, h => /^eth(ernet)?(\s*cable)?$/i.test(String(h).trim()));
   o.ethernetM = kEth ? num(row[kEth]) : NaN;
-  o.lineID = getVal(row, KEY.lineID, NaN);
+  o.lineID = getVal(row, lineIdHeader, NaN);
   o.bulbonline = getVal(row, KEY.bulbonline, NaN);
   o.universe = getVal(row, KEY.universe, NaN);
   o.isGizmo = rowIsGizmoRow(row, headers);
@@ -330,9 +334,63 @@ function csvToSceneVec(px, py, pz, zMaxRef, minPxRef, maxPxRef) {
   return new THREE.Vector3(minPxRef + maxPxRef - px, pz - zMaxRef, py);
 }
 
+/** Catenary steel polyline: sag center + two endpoints (CSV metres); one entry per lineID. */
+function findCatenaryColumnMapping(headers) {
+  const lineH = colFind(headers, h => /^lineid$/i.test(String(h).trim()));
+  const cx = colFind(headers, h => /^cat_sagcenter_pt_x$/i.test(String(h).trim()));
+  const cy = colFind(headers, h => /^cat_sagcenter_pt_y$/i.test(String(h).trim()));
+  const cz = colFind(headers, h => /^cat_sagcenter_pt_z$/i.test(String(h).trim()));
+  const e1x = colFind(headers, h => /^cat_endpoint1_x$/i.test(String(h).trim()));
+  const e1y = colFind(headers, h => /^cat_endpoint1_y$/i.test(String(h).trim()));
+  const e1z = colFind(headers, h => /^cat_endpoint1_z$/i.test(String(h).trim()));
+  const e2x = colFind(headers, h => /^cat_endpoint2_x$/i.test(String(h).trim()));
+  const e2y = colFind(headers, h => /^cat_endpoint2_y$/i.test(String(h).trim()));
+  const e2z = colFind(headers, h => /^cat_endpoint2_z$/i.test(String(h).trim()));
+  if (!lineH || !cx || !cy || !cz || !e1x || !e1y || !e1z || !e2x || !e2y || !e2z) return null;
+  return { lineH, cx, cy, cz, e1x, e1y, e1z, e2x, e2y, e2z };
+}
+
+function buildCatenaryMapFromRows(rows, headers) {
+  const cmap = findCatenaryColumnMapping(headers);
+  if (!cmap) return new Map();
+  const map = new Map();
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (rowIsGizmoRow(row, headers)) continue;
+    const lid = num(row[cmap.lineH]);
+    if (!Number.isFinite(lid) || map.has(lid)) continue;
+    const center = {
+      px: num(row[cmap.cx]),
+      py: num(row[cmap.cy]),
+      pz: num(row[cmap.cz])
+    };
+    const e1 = {
+      px: num(row[cmap.e1x]),
+      py: num(row[cmap.e1y]),
+      pz: num(row[cmap.e1z])
+    };
+    const e2 = {
+      px: num(row[cmap.e2x]),
+      py: num(row[cmap.e2y]),
+      pz: num(row[cmap.e2z])
+    };
+    if (
+      ![center.px, center.py, center.pz, e1.px, e1.py, e1.pz, e2.px, e2.py, e2.pz].every(
+        Number.isFinite
+      )
+    ) {
+      continue;
+    }
+    map.set(lid, { center, e1, e2 });
+  }
+  return map;
+}
+
 let HEADERS = [];
 const DATA_FILE =
   new URLSearchParams(window.location.search).get('data') || 'April23_001.csv';
+/** Per–lineID catenary geometry from CSV (optional second file via ?catData=). */
+let CAT_BY_LINE = new Map();
 let ALL = [];
 let VIZ = [];
 let CABLE_KEY = 'Bulbcablelength(M)';
@@ -356,7 +414,8 @@ try {
   if (hHint) hHint.textContent = CABLE_KEY;
   const fHint = document.getElementById('dataFileHint');
   if (fHint) fHint.textContent = DATA_FILE;
-  ALL = parsed.rows.map(r => buildRecord(r, HEADERS, CABLE_KEY));
+  const lineIdHeader = lineIdHeaderFromHeaders(HEADERS);
+  ALL = parsed.rows.map(r => buildRecord(r, HEADERS, CABLE_KEY, lineIdHeader));
   VIZ = ALL.filter(d => !d.isGizmo);
   if (VIZ.length === 0) throw new Error('No data rows in ' + DATA_FILE);
   if (VIZ.length === ALL.length) console.warn('No gizmo/axis rows (AmI_*…*indicator=True) -- orientation cross hidden.');
@@ -364,6 +423,26 @@ try {
   const _minPx = Math.min(...VIZ.map(d => d.px));
   const _maxPx = Math.max(...VIZ.map(d => d.px));
   for (const d of ALL) applySceneCoords(d, _zMax, _minPx, _maxPx);
+
+  CAT_BY_LINE = buildCatenaryMapFromRows(parsed.rows, HEADERS);
+  if (CAT_BY_LINE.size === 0) {
+    const catFile =
+      new URLSearchParams(window.location.search).get('catData') || 'May5_003.csv';
+    if (catFile !== DATA_FILE) {
+      try {
+        const cr = await fetch(catFile, { cache: 'no-cache' });
+        if (cr.ok) {
+          const cp = parseCSV(await cr.text());
+          CAT_BY_LINE = buildCatenaryMapFromRows(cp.rows, cp.headers);
+          if (CAT_BY_LINE.size > 0) console.info('[catenary markers]', CAT_BY_LINE.size, 'lines from', catFile);
+        }
+      } catch (e) {
+        console.warn('[catenary markers] optional load', catFile, e.message || e);
+      }
+    }
+  } else {
+    console.info('[catenary markers]', CAT_BY_LINE.size, 'lines from', DATA_FILE);
+  }
 } catch (e) {
   showErr('Could not load ' + DATA_FILE + '.\n\n' + e.message + '\n\nServe this folder with a static server (e.g. python3 -m http.server).');
   throw e;
@@ -907,6 +986,18 @@ scene.add(dimmerGroup);
 const curveMidpointsGroup = new THREE.Group();
 curveMidpointsGroup.name = 'curveArcMidpoints';
 scene.add(curveMidpointsGroup);
+
+const catenaryMarkersGroup = new THREE.Group();
+catenaryMarkersGroup.name = 'catenarySteelMarkers';
+scene.add(catenaryMarkersGroup);
+const catMarkerGeo = new THREE.SphereGeometry(0.05, 14, 14);
+const catMarkerMat = new THREE.MeshBasicMaterial({
+  color: 0x66ddb3,
+  transparent: true,
+  opacity: 0.95,
+  depthTest: false,
+  depthWrite: false
+});
 
 const DIMMER_LEN_M = 0.05;
 const dimmerStickGeo = new THREE.CylinderGeometry(0.008, 0.008, DIMMER_LEN_M, 8);
@@ -1504,6 +1595,68 @@ function rebuildDimmerMarkers() {
   }
 }
 
+function rebuildCatenaryMarkers() {
+  while (catenaryMarkersGroup.children.length > 0) {
+    catenaryMarkersGroup.remove(catenaryMarkersGroup.children[0]);
+  }
+  if (!CAT_BY_LINE.size) {
+    catenaryMarkersGroup.visible = false;
+    return;
+  }
+  const filt = lineFilterSliderIdx();
+  const showAll = filt < 0 || filt >= lineIDs.length;
+  const onlyLid = showAll ? null : lineIDs[filt];
+  let any = false;
+  for (const [lid, c] of CAT_BY_LINE) {
+    if (!showAll && lid !== onlyLid) continue;
+    any = true;
+    const p0 = csvToSceneVec(c.center.px, c.center.py, c.center.pz, zMax, minPx, maxPx);
+    const p1 = csvToSceneVec(c.e1.px, c.e1.py, c.e1.pz, zMax, minPx, maxPx);
+    const p2 = csvToSceneVec(c.e2.px, c.e2.py, c.e2.pz, zMax, minPx, maxPx);
+    const m0 = new THREE.Mesh(catMarkerGeo, catMarkerMat);
+    m0.renderOrder = 48;
+    m0.position.copy(p0);
+    m0.userData.catHover = {
+      role: 'Catenary sag center',
+      lineID: lid,
+      px: c.center.px,
+      py: c.center.py,
+      pz: c.center.pz,
+      sx: p0.x,
+      sy: p0.y,
+      sz: p0.z
+    };
+    const m1 = new THREE.Mesh(catMarkerGeo, catMarkerMat);
+    m1.renderOrder = 48;
+    m1.position.copy(p1);
+    m1.userData.catHover = {
+      role: 'Catenary endpoint 1',
+      lineID: lid,
+      px: c.e1.px,
+      py: c.e1.py,
+      pz: c.e1.pz,
+      sx: p1.x,
+      sy: p1.y,
+      sz: p1.z
+    };
+    const m2 = new THREE.Mesh(catMarkerGeo, catMarkerMat);
+    m2.renderOrder = 48;
+    m2.position.copy(p2);
+    m2.userData.catHover = {
+      role: 'Catenary endpoint 2',
+      lineID: lid,
+      px: c.e2.px,
+      py: c.e2.py,
+      pz: c.e2.pz,
+      sx: p2.x,
+      sy: p2.y,
+      sz: p2.z
+    };
+    catenaryMarkersGroup.add(m0, m1, m2);
+  }
+  catenaryMarkersGroup.visible = any;
+}
+
 function rebuildVisibleGeometry() {
   const filt = lineFilterSliderIdx();
   let vis;
@@ -1578,6 +1731,7 @@ function rebuildVisibleGeometry() {
 
   pointCloud.visible = n > 0;
   dropLines.visible = n > 0;
+  rebuildCatenaryMarkers();
 }
 
 function mirrorPlanX(x) {
@@ -1810,6 +1964,8 @@ raycaster.params.Points.threshold = 0.12;
 const mouse = new THREE.Vector2();
 const tooltip = document.getElementById('tooltip');
 let hoveredIdx = -1;
+/** When hovering catenary markers, track which point so tooltip updates between spheres. */
+let hoveredCatKey = '';
 const highlightMesh = new THREE.Mesh(
   new THREE.SphereGeometry(0.08, 8, 8),
   new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })
@@ -1819,6 +1975,15 @@ scene.add(highlightMesh);
 
 function isAxisIndicatorHeader(h) {
   return /AmI/i.test(h) && /axis/i.test(h) && /indicator/i.test(h);
+}
+
+function formatCatenaryMarkerTooltip(ud) {
+  return [
+    ud.role,
+    `lineID ${ud.lineID}`,
+    `CSV (position_x, position_y, position_z): (${ud.px.toFixed(3)}, ${ud.py.toFixed(3)}, ${ud.pz.toFixed(3)}) m`,
+    `Scene (X, Y, Z): (${ud.sx.toFixed(3)}, ${ud.sy.toFixed(3)}, ${ud.sz.toFixed(3)})`
+  ].join('\n');
 }
 
 function formatTooltip(d) {
@@ -1873,9 +2038,21 @@ function animate() {
   controls.update();
 
   raycaster.setFromCamera(mouse, camera);
-  const intersects = pointCloud.visible ? raycaster.intersectObject(pointCloud) : [];
-  if (intersects.length > 0 && displayedRawIndex.length > 0) {
-    const bufIdx = intersects[0].index;
+  const ptHits = pointCloud.visible ? raycaster.intersectObject(pointCloud) : [];
+  const catHits =
+    viewMode3d && catenaryMarkersGroup.visible
+      ? raycaster.intersectObject(catenaryMarkersGroup, true)
+      : [];
+  const hp = ptHits[0];
+  const hc = catHits[0];
+  let pickBulb =
+    hp &&
+    displayedRawIndex.length > 0 &&
+    (!hc || hp.distance <= hc.distance);
+
+  if (pickBulb) {
+    hoveredCatKey = '';
+    const bufIdx = hp.index;
     const rawIdx = displayedRawIndex[bufIdx];
     const d = VIZ[rawIdx];
     if (rawIdx !== hoveredIdx) {
@@ -1886,7 +2063,19 @@ function animate() {
     highlightMesh.position.set(d.sx, d.syBulb, d.sz);
     highlightMesh.visible = true;
     setHoverDrop(d);
+  } else if (hc && hc.object?.userData?.catHover) {
+    const ud = hc.object.userData.catHover;
+    const catKey = `${ud.lineID}\t${ud.role}\t${ud.px}\t${ud.py}\t${ud.pz}`;
+    if (catKey !== hoveredCatKey) {
+      hoveredCatKey = catKey;
+      hoveredIdx = -2;
+      tooltip.style.display = 'block';
+      tooltip.textContent = formatCatenaryMarkerTooltip(ud);
+    }
+    hideHoverDrop();
+    highlightMesh.visible = false;
   } else {
+    hoveredCatKey = '';
     if (hoveredIdx !== -1) hideHoverDrop();
     hoveredIdx = -1;
     tooltip.style.display = 'none';
