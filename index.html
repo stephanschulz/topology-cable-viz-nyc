@@ -149,6 +149,7 @@
     Indigo dashed segments at each end show the straight chord from the wall anchors <b>a1</b>/<b>a2</b> to the first/last bulb (CSV catenary endpoints).
     <b>S</b> = total developed length. Segment labels are metres (e.g. <code>0.335m</code>, <code>8.710m</code>). Grey slanted lines join each bulb joint to its dimmer centre (same index).
     <b>server</b> is drawn on the side of the strip toward CSV plan (<code>4</code>, <code>11</code>) — nearer first hang vs last hang.
+    In the 3D view, <b>Entrance</b> sits past the far CSV <code>+X</code> edge (same plan <code>y</code> reference as server).
   </p>
   <svg id="unrollSvg" xmlns="http://www.w3.org/2000/svg"></svg>
 </div>
@@ -2053,6 +2054,20 @@ scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(roomPts), new 
   serverLbl.name = 'serverRoomLabel';
   serverLbl.position.copy(serverScene);
   scene.add(serverLbl);
+
+  const entranceScene = csvToSceneVec(maxPx, SERVER_ROOM_CSV.py, serverPz);
+  entranceScene.x -= 2.8;
+  entranceScene.y = floorGridY + 0.06;
+  entranceScene.z += 2.2;
+  const entranceDiv = document.createElement('div');
+  entranceDiv.className = 'dim-label';
+  entranceDiv.style.color = '#d4d4c8';
+  entranceDiv.style.borderColor = '#786';
+  entranceDiv.textContent = 'Entrance';
+  const entranceLbl = new CSS2DObject(entranceDiv);
+  entranceLbl.name = 'entranceLabel';
+  entranceLbl.position.copy(entranceScene);
+  scene.add(entranceLbl);
 }
 
 const gizmoGroup = new THREE.Group();
