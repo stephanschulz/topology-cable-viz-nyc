@@ -84,7 +84,9 @@
   <div>
     <button type="button" id="toggleView2d" style="background:#111;border:1px solid #444;color:#ddd;padding:8px 10px;font-family:inherit;font-size:12px;cursor:pointer;width:100%">2D cable unroll</button>
     <button type="button" id="exportUnrollPdf" style="background:#111;border:1px solid #333;color:#ccc;padding:6px 8px;font-family:inherit;font-size:12px;cursor:pointer;width:100%;margin-top:6px">Export 2D PDF</button>
+    <button type="button" id="toggleOrthoCam" style="background:#111;border:1px solid #444;color:#ddd;padding:8px 10px;font-family:inherit;font-size:12px;cursor:pointer;width:100%;margin-top:6px">Orthographic view</button>
     <p class="hint" style="margin:4px 0 0 0">Steel hang polyline rolled flat · PDF = portrait A4, one page per <code>lineID</code></p>
+    <p class="hint" style="margin:4px 0 0 0">Orthographic = parallel projection (plan-style); scroll zooms. Toggle back for perspective.</p>
   </div>
   <div>
     <label>Color by</label><br>
@@ -112,15 +114,19 @@
   </div>
   <div>
     <label class="gizmo-chk"><input type="checkbox" id="showGizmo" checked> CSV axis cross</label>
-    <p class="hint" style="margin:2px 0 0 0">RGB = CSV +X, +Y, +Z (designer reference rows, scaled)</p>
+    <p class="hint" style="margin:2px 0 0 0">RGB = CSV +X, +Y, +Z — uses <b>Local</b> axis rows when present (else Global / legacy)</p>
   </div>
   <div>
-    <label class="gizmo-chk"><input type="checkbox" id="showObj"> Show <code>3d/Exported_Lines.obj</code></label>
+    <label class="gizmo-chk"><input type="checkbox" id="showObj"> Show <code>3d/GridBased_BulbCables_GlobalPos.obj</code></label>
     <p id="objStatusHint" class="hint" style="margin:2px 0 0 0;color:#888">Off · drawn at OBJ raw coords (toggle to fetch)</p>
   </div>
   <div>
     <label class="gizmo-chk"><input type="checkbox" id="showWalls" checked> Anchor wall polylines (<b>a1</b>/<b>a2</b>)</label>
     <p class="hint" style="margin:2px 0 0 0">Connects every row's <code>a1</code> anchor (one wall) and every <code>a2</code> anchor (other wall) in <code>lineID</code> order.</p>
+  </div>
+  <div>
+    <label class="gizmo-chk"><input type="checkbox" id="showCsvPositionSpheres" checked> CSV position spheres (orthographic only)</label>
+    <p class="hint" style="margin:2px 0 0 0">Mint spheres at each row's <code>position_x</code>,<code>position_y</code>,<code>position_z</code> (same mesh/style as catenary anchors · Point size slider).</p>
   </div>
   <div>
     <label>Weights export</label><br>
@@ -129,7 +135,7 @@
   </div>
   <div class="hint">
     <b>Cable</b>: <code id="cableKeyHint">Bulbcablelength(M)</code> (auto-detected from header)<br>
-    3D view uses CSV metres with plan-X mirrored so designer +X reads top-left in plan view: <code>X = mirror(position_x)</code>, <code>Y = position_z</code>, <code>Z = position_y</code> (cable drop along −Y). Tooltips/legend always show raw CSV values.
+    3D maps designer <b>up</b> (CSV <code>Up</code> = true on an axis-indicator row, else +Z) onto Three.js <code>+Y</code>. Plan-X mirroring unchanged. Tooltips/legend show raw CSV columns.
   </div>
   <div style="margin-top:8px;padding-top:8px;border-top:1px solid #333">
     <div style="color:#888;font-size:10px;margin-bottom:4px;letter-spacing:0.5px">DISPLAY</div>
@@ -195,7 +201,7 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 // =====================================================================
 // CSV SOURCE — change this single line to point at a different dataset.
 // Bulb mounts and per-lineID catenary geometry are read from the same file.
-const DATA_FILE = 'May5_005.csv';
+const DATA_FILE = 'may8_010_gridbased.csv';
 // =====================================================================
 
 {
@@ -293,11 +299,44 @@ function isTrue(v) {
 
 /** Gizmo: rows with AmI_*axis*indicator = True (designer orientation; excluded from point cloud & bounds) */
 function rowIsGizmoRow(row, headers) {
+  const upH = colFind(headers, h => /^up$/i.test(String(h).trim()));
+  if (upH && isTrue(row[upH])) return true;
   for (const h of headers) {
     if (!/AmI/i.test(h) || !/axis/i.test(h) || !/indicator/i.test(h)) continue;
     if (isTrue(row[h])) return true;
   }
   return false;
+}
+
+/** Designer vertical axis in CSV column space: Z → <code>position_z</code> up, Y → <code>position_y</code> up (Three.js remains Y-up). */
+let CSV_UP_AXIS = 'Z';
+
+/** Row where <code>Up</code> is true: whichever <code>AmI_*axis*indicator</code> is true on that row names the up axis. */
+function detectCsvUpAxisFromRows(headers, rows) {
+  const upH = colFind(headers, h => /^up$/i.test(String(h).trim()));
+  if (!upH) return 'Z';
+  for (const row of rows) {
+    if (!isTrue(row[upH])) continue;
+    for (const h of headers) {
+      if (!/AmI/i.test(h) || !/indicator/i.test(h)) continue;
+      if (!isTrue(row[h])) continue;
+      if (/Xaxis/i.test(h)) return 'X';
+      if (/Yaxis/i.test(h)) return 'Y';
+      if (/Zaxis/i.test(h)) return 'Z';
+    }
+    break;
+  }
+  return 'Z';
+}
+
+function csvVerticalCoord(px, py, pz) {
+  if (CSV_UP_AXIS === 'Y') return py;
+  if (CSV_UP_AXIS === 'X') return px;
+  return pz;
+}
+
+function csvVerticalCoordFromRecord(d) {
+  return csvVerticalCoord(d.px, d.py, d.pz);
 }
 
 function pickCableKey(headers) {
@@ -349,17 +388,82 @@ function flipPlanX(px) {
   return MIRROR.minPx + MIRROR.maxPx - px;
 }
 
-/** Scene coords (Three.js Y-up):
- *  X ← mirror(position_x), Y ← position_z (height), Z ← position_y (long axis). */
+/** Scene coords (Three.js Y-up): mirror <code>position_x</code> onto scene X; designer “up” CSV axis → scene Y; remaining horizontal → scene Z. */
 function applySceneCoords(d) {
-  d.sx = flipPlanX(d.px);
-  d.syMount = d.pz;
-  d.syBulb = d.pz - d.cable;
-  d.sz = d.py;
+  const { px, py, pz } = d;
+  if (CSV_UP_AXIS === 'Y') {
+    d.sx = flipPlanX(px);
+    d.syMount = py;
+    d.syBulb = py - d.cable;
+    d.sz = pz;
+  } else if (CSV_UP_AXIS === 'X') {
+    d.sx = flipPlanX(py);
+    d.syMount = px;
+    d.syBulb = px - d.cable;
+    d.sz = pz;
+  } else {
+    d.sx = flipPlanX(px);
+    d.syMount = pz;
+    d.syBulb = pz - d.cable;
+    d.sz = py;
+  }
 }
 
 function csvToSceneVec(px, py, pz) {
+  if (CSV_UP_AXIS === 'Y') return new THREE.Vector3(flipPlanX(px), py, pz);
+  if (CSV_UP_AXIS === 'X') return new THREE.Vector3(flipPlanX(py), px, pz);
   return new THREE.Vector3(flipPlanX(px), pz, py);
+}
+
+/** GlobalPos cables: subtract G only when |p|² exceeds this (rigid rig vs scaffold near origin). */
+const GLOBAL_VERT_THRESH_SQ = 30 * 30;
+/** Same cable OBJ as <code>compare_raw.html</code>. */
+const OBJ_LINES_URL = '3d/GridBased_BulbCables_GlobalPos.obj';
+
+function orthonormalBasisFromMarkers(O, X, Y, Z) {
+  const dx = X.clone().sub(O);
+  const dy0 = Y.clone().sub(O);
+  const dz0 = Z.clone().sub(O);
+  if (dx.lengthSq() < 1e-16) return null;
+  const ex = dx.clone().normalize();
+  const eyProj = dy0.clone().sub(ex.clone().multiplyScalar(dy0.dot(ex)));
+  if (eyProj.lengthSq() < 1e-16) return null;
+  const ey = eyProj.normalize();
+  const ez = new THREE.Vector3().crossVectors(ex, ey);
+  if (ez.lengthSq() < 1e-16) {
+    ez.copy(dz0).sub(ex.clone().multiplyScalar(dz0.dot(ex)));
+    ez.sub(ey.clone().multiplyScalar(dz0.dot(ey)));
+    if (ez.lengthSq() < 1e-16) return null;
+    ez.normalize();
+  } else {
+    ez.normalize();
+  }
+  const B = new THREE.Matrix3();
+  B.set(ex.x, ey.x, ez.x, ex.y, ey.y, ez.y, ex.z, ey.z, ez.z);
+  return B;
+}
+
+function blenderToDesignerInto(out, vb, csvUpAxis) {
+  const x = vb.x;
+  const y = vb.y;
+  const z = vb.z;
+  if (csvUpAxis === 'Z') out.set(x, -z, y);
+  else if (csvUpAxis === 'Y') out.set(x, y, z);
+  else out.set(y, z, x);
+}
+
+/** Mutates <code>verts</code> Float32Array: Blender → CSV rig metres (before scene map). */
+function transformObjVertsToCsvFrame(verts, O, B, csvUpAxis) {
+  const tmp = new THREE.Vector3();
+  const vb = new THREE.Vector3();
+  for (let i = 0; i < verts.length; i += 3) {
+    vb.set(verts[i], verts[i + 1], verts[i + 2]);
+    blenderToDesignerInto(tmp, vb, csvUpAxis);
+    tmp.applyMatrix3(B);
+    verts[i] = O.x + tmp.x;
+    verts[i + 1] = O.y + tmp.y;
+    verts[i + 2] = O.z + tmp.z;
+  }
 }
 
 /** Catenary steel polyline: sag center + two endpoints (CSV metres); one entry per lineID. */
@@ -435,6 +539,12 @@ try {
   const text = await res.text();
   const parsed = parseCSV(text);
   HEADERS = parsed.headers;
+  CSV_UP_AXIS = detectCsvUpAxisFromRows(HEADERS, parsed.rows);
+  if (CSV_UP_AXIS === 'Z')
+    console.info('[csv-up] vertical axis: CSV +Z → Three.js +Y (default or Up column)');
+  else if (CSV_UP_AXIS === 'Y')
+    console.info('[csv-up] vertical axis: CSV +Y → Three.js +Y');
+  else console.info('[csv-up] vertical axis: CSV +X → Three.js +Y · plan mirror uses position_y');
   CABLE_KEY = pickCableKey(HEADERS);
   const hHint = document.getElementById('cableKeyHint');
   if (hHint) hHint.textContent = CABLE_KEY;
@@ -444,9 +554,9 @@ try {
   if (VIZ.length === 0) throw new Error('No data rows in ' + DATA_FILE);
   if (VIZ.length === ALL.length) console.warn('No gizmo/axis rows (AmI_*…*indicator=True) -- orientation cross hidden.');
   {
-    const pxs = VIZ.map(d => d.px);
-    MIRROR.minPx = Math.min(...pxs);
-    MIRROR.maxPx = Math.max(...pxs);
+    const mir = CSV_UP_AXIS === 'X' ? VIZ.map(d => d.py) : VIZ.map(d => d.px);
+    MIRROR.minPx = Math.min(...mir);
+    MIRROR.maxPx = Math.max(...mir);
   }
   for (const d of ALL) applySceneCoords(d);
 
@@ -466,8 +576,8 @@ try {
 
 const dropMin = Math.min(...VIZ.map(d => d.cable));
 const dropMax = Math.max(...VIZ.map(d => d.cable));
-const zMin = Math.min(...VIZ.map(d => d.pz));
-const zMax = Math.max(...VIZ.map(d => d.pz));
+const zMin = Math.min(...VIZ.map(d => csvVerticalCoordFromRecord(d)));
+const zMax = Math.max(...VIZ.map(d => csvVerticalCoordFromRecord(d)));
 const lineIDs = [...new Set(VIZ.map(d => d.lineID).filter(Number.isFinite))].sort((a, b) => a - b);
 const universes = [...new Set(VIZ.map(d => d.universe).filter(Number.isFinite))].sort((a, b) => a - b);
 const maxLineID = lineIDs.length ? Math.max(...lineIDs) : 1;
@@ -835,15 +945,21 @@ function formatPitchChainGraphic(prev, curr, next, distFn) {
 }
 
 const pxVals = VIZ.map(d => d.px);
-const pyVals = VIZ.map(d => d.py);
+const planDepthVals = VIZ.map(d =>
+  CSV_UP_AXIS === 'Z' ? d.py : d.pz
+);
 const minPx = Math.min(...pxVals);
 const maxPx = Math.max(...pxVals);
-const minPy = Math.min(...pyVals);
-const maxPy = Math.max(...pyVals);
-const cxMid = (minPx + maxPx) / 2;
-const czMid = (minPy + maxPy) / 2;
-/** Ceiling reference plane at top of rig (CSV position_z = zMax → scene Y). */
+const minPlanDepth = Math.min(...planDepthVals);
+const maxPlanDepth = Math.max(...planDepthVals);
+const cxMid = (MIRROR.minPx + MIRROR.maxPx) / 2;
+const czMid = (minPlanDepth + maxPlanDepth) / 2;
+/** CSV vertical span → scene Y (designer up axis per <code>Up</code> column). */
 const ceilingPlaneY = zMax;
+/** Legend / labels: second horizontal CSV column for plan extent. */
+const CSV_PLAN_DEPTH_COL = CSV_UP_AXIS === 'Z' ? 'position_y' : 'position_z';
+const CSV_VERTICAL_COL =
+  CSV_UP_AXIS === 'Y' ? 'position_y' : CSV_UP_AXIS === 'X' ? 'position_x' : 'position_z';
 const minSceneY = Math.min(...VIZ.map(d => d.syBulb), ...VIZ.map(d => d.syMount));
 let GIZMO_ARM_LEN = 0;
 
@@ -854,22 +970,98 @@ function gizmoClassFromHeader(h) {
   if (/_Zaxis_Indicator|_Zaxis_indicator/i.test(h)) return 'Z';
   return null;
 }
+/** Prefer Local axis rows (floor-level rig frame); else Global CAD frame; else legacy AmI_* columns. */
 function findGizmoRows() {
-  const by = { O: null, X: null, Y: null, Z: null };
+  const local = { O: null, X: null, Y: null, Z: null };
+  const global = { O: null, X: null, Y: null, Z: null };
+  const legacy = { O: null, X: null, Y: null, Z: null };
+  const take = (bucket, k, d) => {
+    if (k === 'O' && !bucket.O) bucket.O = d;
+    else if (k === 'X' && !bucket.X) bucket.X = d;
+    else if (k === 'Y' && !bucket.Y) bucket.Y = d;
+    else if (k === 'Z' && !bucket.Z) bucket.Z = d;
+  };
   for (const d of ALL) {
     if (!d.isGizmo) continue;
     for (const h of HEADERS) {
       if (!/AmI/i.test(h) || !/axis/i.test(h) || !/indicator/i.test(h)) continue;
       if (!isTrue(d._raw[h])) continue;
       const k = gizmoClassFromHeader(h);
-      if (k === 'O' && !by.O) by.O = d;
-      else if (k === 'X' && !by.X) by.X = d;
-      else if (k === 'Y' && !by.Y) by.Y = d;
-      else if (k === 'Z' && !by.Z) by.Z = d;
+      if (!k) continue;
+      if (/Local/i.test(h)) take(local, k, d);
+      else if (/Global/i.test(h)) take(global, k, d);
+      else take(legacy, k, d);
     }
   }
-  return by;
+  const full = b => b.O && b.X && b.Y && b.Z;
+  const merge = (a, b) => ({
+    O: a.O || b.O,
+    X: a.X || b.X,
+    Y: a.Y || b.Y,
+    Z: a.Z || b.Z
+  });
+  if (full(local)) return local;
+  if (full(global)) return global;
+  if (full(legacy)) return legacy;
+  return merge(merge(local, global), legacy);
 }
+
+/** Same Local / Global / legacy merge as <code>findGizmoRows</code>, but marker positions as CSV-space vectors (for OBJ rig). */
+function pickRawFrameMarkersVectors() {
+  const local = { O: null, X: null, Y: null, Z: null };
+  const global = { O: null, X: null, Y: null, Z: null };
+  const legacy = { O: null, X: null, Y: null, Z: null };
+  const take = (bucket, k, d) => {
+    const v = new THREE.Vector3(d.px, d.py, d.pz);
+    if (k === 'O' && !bucket.O) bucket.O = v;
+    else if (k === 'X' && !bucket.X) bucket.X = v;
+    else if (k === 'Y' && !bucket.Y) bucket.Y = v;
+    else if (k === 'Z' && !bucket.Z) bucket.Z = v;
+  };
+  for (const d of ALL) {
+    if (!d.isGizmo) continue;
+    for (const h of HEADERS) {
+      if (!/AmI/i.test(h) || !/axis/i.test(h) || !/indicator/i.test(h)) continue;
+      if (!isTrue(d._raw[h])) continue;
+      const key = gizmoClassFromHeader(h);
+      if (!key) continue;
+      if (/Local/i.test(h)) take(local, key, d);
+      else if (/Global/i.test(h)) take(global, key, d);
+      else take(legacy, key, d);
+    }
+  }
+  const full = b => b.O && b.X && b.Y && b.Z;
+  const mergeBuckets = (a, b) => ({
+    O: a.O || b.O,
+    X: a.X || b.X,
+    Y: a.Y || b.Y,
+    Z: a.Z || b.Z
+  });
+  if (full(local)) return { markers: local, frameKind: 'local' };
+  if (full(global)) return { markers: global, frameKind: 'global' };
+  if (full(legacy)) return { markers: legacy, frameKind: 'legacy' };
+  const merged = mergeBuckets(mergeBuckets(local, global), legacy);
+  if (full(merged)) return { markers: merged, frameKind: 'merged' };
+  return null;
+}
+
+/** First bulb row’s <code>globalposition_*</code> (skip gizmo rows) — subtract from GlobalPos OBJ after local rig. */
+function getGlobalPositionOffsetVector() {
+  const hgx = colFind(HEADERS, h => /^globalposition_x$/i.test(String(h).trim()));
+  const hgy = colFind(HEADERS, h => /^globalposition_y$/i.test(String(h).trim()));
+  const hgz = colFind(HEADERS, h => /^globalposition_z$/i.test(String(h).trim()));
+  if (!hgx || !hgy || !hgz) return null;
+  const amiCols = HEADERS.filter(h => /AmI/i.test(h) && /axis/i.test(h) && /indicator/i.test(h));
+  for (const d of ALL) {
+    if (amiCols.some(h => isTrue(d._raw[h]))) continue;
+    const gx = parseFloat(d._raw[hgx]);
+    const gy = parseFloat(d._raw[hgy]);
+    const gz = parseFloat(d._raw[hgz]);
+    if ([gx, gy, gz].every(Number.isFinite)) return new THREE.Vector3(gx, gy, gz);
+  }
+  return null;
+}
+
 function vScene(d) {
   return new THREE.Vector3(d.sx, d.syMount, d.sz);
 }
@@ -890,18 +1082,78 @@ document.body.appendChild(labelRenderer.domElement);
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x0a0a0f, 0.008);
+/** Instanced spheres at CSV mount positions; assigned after catenary marker geo exists. */
+let csvPositionSpheres = null;
 
-const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 500);
+const perspectiveCamera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 500);
 {
   const rigMidY = (ceilingPlaneY + minSceneY) / 2;
-  camera.position.set(cxMid - 18, rigMidY + 8, czMid + 12);
+  perspectiveCamera.position.set(cxMid - 18, rigMidY + 8, czMid + 12);
 }
+
+const rigOrthoSpan = Math.max(
+  MIRROR.maxPx - MIRROR.minPx,
+  maxPlanDepth - minPlanDepth,
+  ceilingPlaneY - minSceneY,
+  12
+);
+const ORTHO_FRUSTUM_HALF_Y = rigOrthoSpan * 0.52;
+
+const orthographicCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 500);
+orthographicCamera.zoom = 1;
+
+function updateOrthoProjection() {
+  const aspect = innerWidth / Math.max(innerHeight, 1);
+  const h = ORTHO_FRUSTUM_HALF_Y;
+  orthographicCamera.left = -h * aspect;
+  orthographicCamera.right = h * aspect;
+  orthographicCamera.top = h;
+  orthographicCamera.bottom = -h;
+  orthographicCamera.updateProjectionMatrix();
+}
+
+/** Active camera (perspective default); swapped when orthographic view is on. */
+let camera = perspectiveCamera;
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.target.set(cxMid, (ceilingPlaneY + minSceneY) / 2, czMid);
 controls.update();
+
+orthographicCamera.position.copy(perspectiveCamera.position);
+orthographicCamera.quaternion.copy(perspectiveCamera.quaternion);
+updateOrthoProjection();
+
+let orthographicViewActive = false;
+
+function setOrthographicCamera(on) {
+  orthographicViewActive = on;
+  const btn = document.getElementById('toggleOrthoCam');
+  if (on) {
+    orthographicCamera.position.copy(perspectiveCamera.position);
+    orthographicCamera.quaternion.copy(perspectiveCamera.quaternion);
+    orthographicCamera.zoom = 1;
+    controls.object = orthographicCamera;
+    camera = orthographicCamera;
+    updateOrthoProjection();
+    if (btn) btn.textContent = 'Perspective view';
+  } else {
+    perspectiveCamera.position.copy(orthographicCamera.position);
+    perspectiveCamera.quaternion.copy(orthographicCamera.quaternion);
+    controls.object = perspectiveCamera;
+    camera = perspectiveCamera;
+    perspectiveCamera.aspect = innerWidth / Math.max(innerHeight, 1);
+    perspectiveCamera.updateProjectionMatrix();
+    if (btn) btn.textContent = 'Orthographic view';
+  }
+  controls.update();
+  refreshCsvPositionSphereInstanceScale();
+}
+
+document.getElementById('toggleOrthoCam')?.addEventListener('click', () => {
+  setOrthographicCamera(!orthographicViewActive);
+});
 
 function dropColor(c) {
   const t = (c - dropMin) / (dropMax - dropMin || 1);
@@ -926,7 +1178,7 @@ function universeColor(u) {
 
 function pointColor(d, mode) {
   if (mode === 'drop') return dropColor(d.cable);
-  if (mode === 'height') return heightColor(d.pz);
+  if (mode === 'height') return heightColor(csvVerticalCoordFromRecord(d));
   if (mode === 'lineID') return lineIDColor(d.lineID);
   return universeColor(d.universe);
 }
@@ -1011,6 +1263,7 @@ const lineMat = new THREE.LineBasicMaterial({
 });
 const dropLines = new THREE.LineSegments(lineGeo, lineMat);
 scene.add(dropLines);
+
 /** Tracks every LineBasicMaterial whose linewidth follows the Line width slider. */
 const tunedLineMats = new Set([lineMat]);
 
@@ -1036,6 +1289,22 @@ const catMarkerMat = new THREE.MeshBasicMaterial({
   opacity: 0.95,
   depthTest: false,
   depthWrite: false
+});
+
+const csvPosSphereDummy = new THREE.Object3D();
+csvPositionSpheres = new THREE.InstancedMesh(catMarkerGeo, catMarkerMat, Math.max(1, VIZ.length));
+csvPositionSpheres.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+csvPositionSpheres.count = 0;
+csvPositionSpheres.frustumCulled = false;
+csvPositionSpheres.renderOrder = 48;
+csvPositionSpheres.visible = false;
+scene.add(csvPositionSpheres);
+
+document.getElementById('showCsvPositionSpheres')?.addEventListener('change', e => {
+  if (!csvPositionSpheres) return;
+  const n = displayedRawIndex.length;
+  csvPositionSpheres.visible =
+    !!e.target.checked && viewMode3d && orthographicViewActive && n > 0;
 });
 
 const DIMMER_LEN_M = 0.05;
@@ -1161,9 +1430,15 @@ function setViewMode3d(on) {
   const btn = document.getElementById('toggleView2d');
   if (btn) btn.textContent = on ? '2D cable unroll' : 'Back to 3D';
   if (!on) rebuildUnrollSvg();
+  if (csvPositionSpheres) {
+    const showCsvS = document.getElementById('showCsvPositionSpheres')?.checked !== false;
+    const n = displayedRawIndex.length;
+    csvPositionSpheres.visible =
+      showCsvS && viewMode3d && orthographicViewActive && n > 0;
+  }
 }
 
-/** opts.witnessTopHi · opts.labelFontSize · opts.labelRotateDeg (e.g. -90 for PDF segment dims). */
+/** opts.witnessTopHi · opts.labelFontSize · opts.labelRotateDeg (e.g. -90 for segment dims in 2D / PDF). */
 function svgHorizDim(x1, x2, yDim, yWitnessFrom, label, minPxLabel = 20, opts) {
   const lo = Math.min(x1, x2);
   const hi = Math.max(x1, x2);
@@ -1383,7 +1658,7 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
       const idLab = bulbonlineLabel(sorted[i]);
       g += `<line x1="${x}" y1="${yBar - 22}" x2="${x}" y2="${yBar + 14}" stroke="#085" stroke-width="2.2"/>`;
       g += `<text x="${x}" y="${yBulbIdBase}" text-anchor="middle" fill="#042" font-size="9.5" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(idLab)}</text>`;
-      if (forPdf) {
+      {
         const cab = sorted[i].cable;
         if (Number.isFinite(cab) && cab > 1e-3) {
           const cy = yBar - 24;
@@ -1404,21 +1679,21 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
       g += `<path d="M ${xAt(coreLen)} ${yBar} L ${xAt(barEnd)} ${yBar}" stroke="#a0522d" stroke-width="5" fill="none" stroke-dasharray="12 7" stroke-linecap="round" stroke-linejoin="round"/>`;
     }
 
-    const pdfSegDimOpts = forPdf ? { labelRotateDeg: -90 } : undefined;
+    const segDimOpts = { labelRotateDeg: -90 };
     g += `<text x="${rowLabX}" y="${yDimDimmer - 6}" ${rowLabStyle}>dimmer to dimmer</text>`;
     if (catEntry && dStartChord > 1e-6 && dimS.length > 0) {
       const sFirstDim = dimS[0];
       const len = sFirstDim - barLeftS;
-      g += svgHorizDim(xAt(barLeftS), xAt(sFirstDim), yDimDimmer, yWitnessFrom, formatLenM(len), 20, pdfSegDimOpts);
+      g += svgHorizDim(xAt(barLeftS), xAt(sFirstDim), yDimDimmer, yWitnessFrom, formatLenM(len), 20, segDimOpts);
     }
     for (let k = 1; k < dimS.length; k++) {
       const dlen = dimS[k] - dimS[k - 1];
-      g += svgHorizDim(xAt(dimS[k - 1]), xAt(dimS[k]), yDimDimmer, yWitnessFrom, formatLenM(dlen), 20, pdfSegDimOpts);
+      g += svgHorizDim(xAt(dimS[k - 1]), xAt(dimS[k]), yDimDimmer, yWitnessFrom, formatLenM(dlen), 20, segDimOpts);
     }
     if (catEntry && dEndChord > 1e-6 && dimS.length > 0) {
       const sLastDim = dimS[dimS.length - 1];
       const len = barRightS - sLastDim;
-      g += svgHorizDim(xAt(sLastDim), xAt(barRightS), yDimDimmer, yWitnessFrom, formatLenM(len), 20, pdfSegDimOpts);
+      g += svgHorizDim(xAt(sLastDim), xAt(barRightS), yDimDimmer, yWitnessFrom, formatLenM(len), 20, segDimOpts);
     }
 
     g += `<text x="${rowLabX}" y="${yDimBulb - 6}" ${rowLabStyle}>bulb to bulb</text>`;
@@ -1430,12 +1705,12 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
         yWitnessBulb,
         formatLenM(dStartChord),
         20,
-        pdfSegDimOpts
+        segDimOpts
       );
     }
     for (let i = 1; i < nBulbs; i++) {
       const dlen = cum[i] - cum[i - 1];
-      g += svgHorizDim(xAt(cum[i - 1]), xAt(cum[i]), yDimBulb, yWitnessBulb, formatLenM(dlen), 20, pdfSegDimOpts);
+      g += svgHorizDim(xAt(cum[i - 1]), xAt(cum[i]), yDimBulb, yWitnessBulb, formatLenM(dlen), 20, segDimOpts);
     }
     if (catEntry && dEndChord > 1e-6) {
       g += svgHorizDim(
@@ -1445,7 +1720,7 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
         yWitnessBulb,
         formatLenM(dEndChord),
         20,
-        pdfSegDimOpts
+        segDimOpts
       );
     }
 
@@ -2010,6 +2285,24 @@ function rebuildVisibleGeometry() {
 
   pointCloud.visible = n > 0;
   dropLines.visible = n > 0;
+
+  if (csvPositionSpheres) {
+    const showCsvS = document.getElementById('showCsvPositionSpheres')?.checked !== false;
+    const ptF = getPointScaleFactor();
+    csvPosSphereDummy.scale.setScalar(ptF);
+    for (let j = 0; j < n; j++) {
+      const d = VIZ[vis[j]];
+      const p = csvToSceneVec(d.px, d.py, d.pz);
+      csvPosSphereDummy.position.copy(p);
+      csvPosSphereDummy.updateMatrix();
+      csvPositionSpheres.setMatrixAt(j, csvPosSphereDummy.matrix);
+    }
+    csvPositionSpheres.count = n;
+    csvPositionSpheres.instanceMatrix.needsUpdate = true;
+    csvPositionSpheres.visible =
+      showCsvS && viewMode3d && orthographicViewActive && n > 0;
+  }
+
   rebuildCatenaryMarkers();
   rebuildWallLines();
 }
@@ -2018,7 +2311,7 @@ const gizmoRows = findGizmoRows();
 const floorGridY = gizmoRows.O != null ? gizmoRows.O.syMount : minSceneY - 0.5;
 
 const ceilW = Math.abs(maxPx - minPx) + 1.0;
-const ceilD = Math.abs(maxPy - minPy) + 1.0;
+const ceilD = Math.abs(maxPlanDepth - minPlanDepth) + 1.0;
 const ceilGeo = new THREE.PlaneGeometry(ceilW, ceilD);
 const ceilMat = new THREE.MeshBasicMaterial({ color: 0x111122, transparent: true, opacity: 0.25, side: THREE.DoubleSide });
 const ceiling = new THREE.Mesh(ceilGeo, ceilMat);
@@ -2031,11 +2324,11 @@ gridHelper.position.set(cxMid, floorGridY, czMid);
 scene.add(gridHelper);
 
 const roomPts = [
-  new THREE.Vector3(flipPlanX(minPx) + 0.15, ceilingPlaneY, minPy - 0.15),
-  new THREE.Vector3(flipPlanX(maxPx) - 0.15, ceilingPlaneY, minPy - 0.15),
-  new THREE.Vector3(flipPlanX(maxPx) - 0.15, ceilingPlaneY, maxPy + 0.15),
-  new THREE.Vector3(flipPlanX(minPx) + 0.15, ceilingPlaneY, maxPy + 0.15),
-  new THREE.Vector3(flipPlanX(minPx) + 0.15, ceilingPlaneY, minPy - 0.15),
+  new THREE.Vector3(flipPlanX(MIRROR.minPx) + 0.15, ceilingPlaneY, minPlanDepth - 0.15),
+  new THREE.Vector3(flipPlanX(MIRROR.maxPx) - 0.15, ceilingPlaneY, minPlanDepth - 0.15),
+  new THREE.Vector3(flipPlanX(MIRROR.maxPx) - 0.15, ceilingPlaneY, maxPlanDepth + 0.15),
+  new THREE.Vector3(flipPlanX(MIRROR.minPx) + 0.15, ceilingPlaneY, maxPlanDepth + 0.15),
+  new THREE.Vector3(flipPlanX(MIRROR.minPx) + 0.15, ceilingPlaneY, minPlanDepth - 0.15),
 ];
 scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(roomPts), new THREE.LineBasicMaterial({ color: 0x334466 })));
 
@@ -2075,7 +2368,11 @@ gizmoGroup.name = 'csvAxisGizmo';
 scene.add(gizmoGroup);
 {
   const by = gizmoRows;
-  const plan = Math.max(Math.abs(maxPx - minPx), Math.abs(maxPy - minPy), 0.01);
+  const plan = Math.max(
+    Math.abs(MIRROR.maxPx - MIRROR.minPx),
+    Math.abs(maxPlanDepth - minPlanDepth),
+    0.01
+  );
   const vert = Math.max(zMax - zMin, 0.01);
   const armLen = Math.max(1.5, 0.1 * Math.max(plan, vert));
   GIZMO_ARM_LEN = armLen;
@@ -2168,27 +2465,24 @@ function setObjStatus(text, color) {
 }
 
 function buildObjLineSegments(text) {
-  const verts = [];
+  const vertsFlat = [];
   const segs = [];
-  const lines = text.split(/\r?\n/);
-  for (const raw of lines) {
+  for (const raw of text.split(/\r?\n/)) {
     if (!raw) continue;
     if (raw.startsWith('v ')) {
       const p = raw.split(/\s+/);
-      verts.push(parseFloat(p[1]), parseFloat(p[2]), parseFloat(p[3]));
+      vertsFlat.push(parseFloat(p[1]), parseFloat(p[2]), parseFloat(p[3]));
     } else if (raw.startsWith('l ')) {
       const idx = raw.split(/\s+/).slice(1).map(s => parseInt(s, 10)).filter(n => Number.isFinite(n));
-      for (let i = 0; i < idx.length - 1; i++) {
-        segs.push(idx[i], idx[i + 1]);
-      }
+      for (let i = 0; i < idx.length - 1; i++) segs.push(idx[i], idx[i + 1]);
     }
   }
-  if (!verts.length || !segs.length) return null;
+  if (!vertsFlat.length || !segs.length) return null;
 
   let oMinX = Infinity, oMinY = Infinity, oMinZ = Infinity;
   let oMaxX = -Infinity, oMaxY = -Infinity, oMaxZ = -Infinity;
-  for (let i = 0; i < verts.length; i += 3) {
-    const x = verts[i], y = verts[i + 1], z = verts[i + 2];
+  for (let i = 0; i < vertsFlat.length; i += 3) {
+    const x = vertsFlat[i], y = vertsFlat[i + 1], z = vertsFlat[i + 2];
     if (x < oMinX) oMinX = x; if (x > oMaxX) oMaxX = x;
     if (y < oMinY) oMinY = y; if (y > oMaxY) oMaxY = y;
     if (z < oMinZ) oMinZ = z; if (z > oMaxZ) oMaxZ = z;
@@ -2196,27 +2490,71 @@ function buildObjLineSegments(text) {
 
   const offX = oMinX - minPx;
   const offY = oMaxY - zMax;
-  const offZ = oMaxZ + minPy;
+  const offZ = oMaxZ + minPlanDepth;
   const xMid = MIRROR.minPx + MIRROR.maxPx;
 
   const positions = new Float32Array(segs.length * 3);
-  for (let i = 0; i < segs.length; i++) {
-    const v = (segs[i] - 1) * 3;
-    const xo = verts[v], yo = verts[v + 1], zo = verts[v + 2];
-    const csvX = xo - offX;
-    const csvY = -(zo - offZ);
-    const csvZ = yo - offY;
-    positions[i * 3] = xMid - csvX;
-    positions[i * 3 + 1] = csvZ;
-    positions[i * 3 + 2] = csvY;
+  const picked = pickRawFrameMarkersVectors();
+  const B = picked && orthonormalBasisFromMarkers(picked.markers.O, picked.markers.X, picked.markers.Y, picked.markers.Z);
+  let alignHint = 'bbox heuristic';
+  let offsets = { offX, offY, offZ };
+
+  if (picked && B) {
+    offsets = null;
+    const verts = new Float32Array(vertsFlat);
+    transformObjVertsToCsvFrame(verts, picked.markers.O, B, CSV_UP_AXIS);
+    if (picked.frameKind === 'local') {
+      const G = getGlobalPositionOffsetVector();
+      if (G) {
+        const q = new THREE.Vector3();
+        for (let vi = 0; vi < verts.length; vi += 3) {
+          q.set(verts[vi], verts[vi + 1], verts[vi + 2]);
+          if (q.lengthSq() < GLOBAL_VERT_THRESH_SQ) continue;
+          verts[vi] -= G.x;
+          verts[vi + 1] -= G.y;
+          verts[vi + 2] -= G.z;
+        }
+      }
+    }
+    for (let i = 0; i < segs.length; i++) {
+      const vi = (segs[i] - 1) * 3;
+      const s = csvToSceneVec(verts[vi], verts[vi + 1], verts[vi + 2]);
+      positions[i * 3] = s.x;
+      positions[i * 3 + 1] = s.y;
+      positions[i * 3 + 2] = s.z;
+    }
+    alignHint =
+      picked.frameKind === 'local'
+        ? 'CSV rig (local)'
+        : picked.frameKind === 'global'
+          ? 'CSV rig (global)'
+          : picked.frameKind === 'legacy'
+            ? 'CSV rig (legacy)'
+            : 'CSV rig (merged)';
+    console.info('[obj-align]', alignHint, 'Up', CSV_UP_AXIS);
+  } else {
+    for (let i = 0; i < segs.length; i++) {
+      const vi = (segs[i] - 1) * 3;
+      const xo = vertsFlat[vi], yo = vertsFlat[vi + 1], zo = vertsFlat[vi + 2];
+      const csvX = xo - offX;
+      const csvY = -(zo - offZ);
+      const csvZ = yo - offY;
+      positions[i * 3] = xMid - csvX;
+      positions[i * 3 + 1] = csvZ;
+      positions[i * 3 + 2] = csvY;
+    }
+    if (!picked) console.warn('[obj-align] missing indicator rows — bbox heuristic');
+    else console.warn('[obj-align] degenerate marker arms — bbox heuristic');
   }
+
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   return {
     geometry: geo,
     objBbox: { minX: oMinX, minY: oMinY, minZ: oMinZ, maxX: oMaxX, maxY: oMaxY, maxZ: oMaxZ },
-    offsets: { offX, offY, offZ },
-    vertCount: verts.length / 3,
+    offsets,
+    alignHint,
+    vertCount: vertsFlat.length / 3,
     segCount: segs.length / 2
   };
 }
@@ -2224,9 +2562,9 @@ function buildObjLineSegments(text) {
 async function loadObjOnce() {
   if (objLoadState === 'loaded' || objLoadState === 'loading') return;
   objLoadState = 'loading';
-  setObjStatus('loading 3d/Exported_Lines.obj…', '#aa8');
+  setObjStatus(`loading ${OBJ_LINES_URL}…`, '#aa8');
   try {
-    const res = await fetch('3d/Exported_Lines.obj');
+    const res = await fetch(OBJ_LINES_URL);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const text = await res.text();
     const built = buildObjLineSegments(text);
@@ -2247,11 +2585,11 @@ async function loadObjOnce() {
     objGroup.scale.set(1, 1, 1);
     objLoadState = 'loaded';
     const o = built.offsets;
-    setObjStatus(
-      `loaded · ${built.vertCount} verts · ${built.segCount} segments · ` +
-        `aligned (offX=${o.offX.toFixed(2)} offY=${o.offY.toFixed(2)} offZ=${o.offZ.toFixed(2)})`,
-      '#9c9'
-    );
+    const alignBit =
+      o != null
+        ? `${built.alignHint} · bbox off X/Y/Z=${o.offX.toFixed(2)} / ${o.offY.toFixed(2)} / ${o.offZ.toFixed(2)}`
+        : built.alignHint;
+    setObjStatus(`loaded · ${built.vertCount} verts · ${built.segCount} segments · ${alignBit}`, '#9c9');
   } catch (err) {
     objLoadState = 'error';
     setObjStatus(`failed: ${err && err.message ? err.message : err}`, '#c66');
@@ -2274,9 +2612,9 @@ function buildLegend(mode) {
   el.innerHTML = `<div style="color:#cde;margin-bottom:6px">Data: <code style="color:#fff">${DATA_FILE}</code></div>
     <div style="color:#aaa;margin-bottom:6px">Bounds (CSV)</div>
     <div class="legend-row">position_x</div><div style="margin-left:18px">${minPx.toFixed(2)} … ${maxPx.toFixed(2)} m</div>
-    <div class="legend-row">position_y</div><div style="margin-left:18px">${minPy.toFixed(2)} … ${maxPy.toFixed(2)} m</div>
-    <div class="legend-row">position_z</div><div style="margin-left:18px">${zMin.toFixed(2)} … ${zMax.toFixed(2)} m</div>
-    <div style="margin-top:8px;color:#669">Ceiling plane at scene Y = ${ceilingPlaneY.toFixed(3)} m (= max CSV position_z)</div>
+    <div class="legend-row">${CSV_PLAN_DEPTH_COL}</div><div style="margin-left:18px">${minPlanDepth.toFixed(2)} … ${maxPlanDepth.toFixed(2)} m</div>
+    <div class="legend-row">${CSV_VERTICAL_COL}</div><div style="margin-left:18px">${zMin.toFixed(2)} … ${zMax.toFixed(2)} m</div>
+    <div style="margin-top:8px;color:#669">Ceiling plane at scene Y = ${ceilingPlaneY.toFixed(3)} m (max CSV <code>${CSV_VERTICAL_COL}</code> → Three.js +Y)</div>
     <div style="margin-top:4px;color:#666;font-size:10px">cable: ${dropMin.toFixed(2)} – ${dropMax.toFixed(2)} m</div>
     <div style="margin-top:6px;color:#7a7">Gizmo: RGB = CSV +X, +Y, +Z (arms scaled to ≈10% of size${typeof GIZMO_ARM_LEN === 'number' && GIZMO_ARM_LEN > 0 ? `, max ${GIZMO_ARM_LEN.toFixed(1)} m` : ''})</div>
     <div style="margin-top:4px;color:#666;font-size:10px">Floor grid at scene Y = ${floorGridY.toFixed(3)} m (CSV origin ${gizmoRows.O ? '0,0,0' : '—, fallback'})</div>`;
@@ -2284,8 +2622,8 @@ function buildLegend(mode) {
     el.innerHTML += `<div class="legend-row" style="margin-top:8px"><div class="legend-dot" style="background:#44ff88"></div> short drop</div>
       <div class="legend-row"><div class="legend-dot" style="background:#ff6644"></div> long drop</div>`;
   } else if (mode === 'height') {
-    el.innerHTML += `<div class="legend-row" style="margin-top:8px"><div class="legend-dot" style="background:#00eeff"></div> low z</div>
-      <div class="legend-row"><div class="legend-dot" style="background:#8800ff"></div> high z</div>`;
+    el.innerHTML += `<div class="legend-row" style="margin-top:8px"><div class="legend-dot" style="background:#00eeff"></div> low (${CSV_VERTICAL_COL})</div>
+      <div class="legend-row"><div class="legend-dot" style="background:#8800ff"></div> high (${CSV_VERTICAL_COL})</div>`;
   } else if (mode === 'lineID') {
     el.innerHTML += `<div style="margin-top:8px;color:#888">lineIDs: ${lineIDs.length} values</div>`;
   } else {
@@ -2357,6 +2695,27 @@ function getPointScaleFactor() {
   return Number.isFinite(v) && v > 0 ? v / 4 : 1;
 }
 
+/** CSV position spheres use InstancedMesh: mesh.scale would shear translations toward origin.
+ *  Bake point scale into each instance matrix (same idea as per-Mesh scale on catenary markers). */
+function refreshCsvPositionSphereInstanceScale() {
+  if (!csvPositionSpheres) return;
+  const vis = displayedRawIndex;
+  const n = vis.length;
+  const showCsvS = document.getElementById('showCsvPositionSpheres')?.checked !== false;
+  const ptF = getPointScaleFactor();
+  csvPosSphereDummy.scale.setScalar(ptF);
+  for (let j = 0; j < n; j++) {
+    const d = VIZ[vis[j]];
+    const p = csvToSceneVec(d.px, d.py, d.pz);
+    csvPosSphereDummy.position.copy(p);
+    csvPosSphereDummy.updateMatrix();
+    csvPositionSpheres.setMatrixAt(j, csvPosSphereDummy.matrix);
+  }
+  csvPositionSpheres.instanceMatrix.needsUpdate = true;
+  csvPositionSpheres.visible =
+    showCsvS && viewMode3d && orthographicViewActive && n > 0;
+}
+
 function applyPointScaleToScene() {
   const f = getPointScaleFactor();
   catenaryMarkersGroup.traverse(o => {
@@ -2371,6 +2730,7 @@ function applyPointScaleToScene() {
     }
   });
   highlightMesh.scale.setScalar(f);
+  refreshCsvPositionSphereInstanceScale();
 }
 
 document.getElementById('ptSize').addEventListener('input', e => {
@@ -2510,8 +2870,13 @@ window.addEventListener('mousemove', e => {
 });
 
 window.addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
+  const aspect = innerWidth / Math.max(innerHeight, 1);
+  if (camera.isPerspectiveCamera) {
+    camera.aspect = aspect;
+    camera.updateProjectionMatrix();
+  } else {
+    updateOrthoProjection();
+  }
   renderer.setSize(innerWidth, innerHeight);
   labelRenderer.setSize(innerWidth, innerHeight);
 });
