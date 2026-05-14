@@ -85,7 +85,7 @@
     <button type="button" id="toggleView2d" style="background:#111;border:1px solid #444;color:#ddd;padding:8px 10px;font-family:inherit;font-size:12px;cursor:pointer;width:100%">2D cable unroll</button>
     <button type="button" id="exportUnrollPdf" style="background:#111;border:1px solid #333;color:#ccc;padding:6px 8px;font-family:inherit;font-size:12px;cursor:pointer;width:100%;margin-top:6px">Export 2D PDF</button>
     <button type="button" id="toggleOrthoCam" style="background:#111;border:1px solid #444;color:#ddd;padding:8px 10px;font-family:inherit;font-size:12px;cursor:pointer;width:100%;margin-top:6px">Orthographic view</button>
-    <p class="hint" style="margin:4px 0 0 0">Steel hang polyline rolled flat · PDF = portrait A4, one page per <code>lineID</code></p>
+    <p class="hint" style="margin:4px 0 0 0">2D PDF = landscape A4 · one page per <code>lineID</code> · side-elevation curve drawing on top + steel hang polyline rolled flat below with all dimension data.</p>
     <p class="hint" style="margin:4px 0 0 0">Orthographic = parallel projection (plan-style); scroll zooms. Toggle back for perspective.</p>
   </div>
   <div>
@@ -1742,6 +1742,9 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
   const spacingM = parseFloat(document.getElementById('dimmerSpacingCm')?.value ?? '33') / 100;
   const startArc = parseFloat(document.getElementById('dimmerStartOffsetCm')?.value ?? '0') / 100;
   const centerOut = !!document.getElementById('dimmerCenterOut')?.checked;
+  const includeProfile = !!opts.includeProfile;
+  const profileBandH = includeProfile ? 240 : 0;
+  const profileGap = includeProfile ? 14 : 0;
 
   const baseMarginL = 104;
   const baseMarginR = 52;
@@ -1847,8 +1850,9 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
 
     const xAt = s => marginL + (Math.min(Math.max(barLeftS, s), barRightS) - barLeftS) * scale;
 
-    const yTitle = yCursor;
-    const yBar = yCursor + (forPdf ? 90 : 36);
+    const yProfileTop = yCursor;
+    const yTitle = yCursor + profileBandH + profileGap;
+    const yBar = yTitle + (forPdf ? 90 : 36);
     const yWitnessFrom = yBar + 14;
     const yDimDimmer = yWitnessFrom + 40;
     const yWitnessBulb = yDimDimmer + 18;
@@ -1868,6 +1872,13 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
         }`;
 
     let g = `<g>`;
+    if (includeProfile) {
+      g += buildLineProfileBandFragment(lid, {
+        xAt,
+        yTop: yProfileTop,
+        height: profileBandH
+      });
+    }
     g += `<text x="${marginL}" y="${yTitle}" fill="#1a1a1a" font-size="13" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(title)}</text>`;
     g += `<text x="${rowLabX}" y="${yBar + 5}" ${rowLabStyle}>lineID ${lid}</text>`;
 
@@ -2102,8 +2113,8 @@ async function exportUnrollPdf() {
     return;
   }
 
-  const pdfW = 960;
-  const doc = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' });
+  const pdfW = 1300;
+  const doc = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'landscape' });
   const margin = 14;
   const scaleInset = 0.97;
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:-]/g, '').replace('T', '_');
@@ -2111,8 +2122,13 @@ async function exportUnrollPdf() {
 
   try {
     for (let pi = 0; pi < idsToExport.length; pi++) {
-      if (pi > 0) doc.addPage('a4', 'portrait');
-      rebuildUnrollSvg(true, true, { singleLineId: idsToExport[pi], svgWidth: pdfW, forPdf: true });
+      if (pi > 0) doc.addPage('a4', 'landscape');
+      rebuildUnrollSvg(true, true, {
+        singleLineId: idsToExport[pi],
+        svgWidth: pdfW,
+        forPdf: true,
+        includeProfile: true
+      });
       const svg = document.getElementById('unrollSvg');
       if (!svg) continue;
       const sw = parseFloat(svg.getAttribute('width')) || pdfW;
@@ -2135,6 +2151,144 @@ async function exportUnrollPdf() {
   } finally {
     rebuildUnrollSvg(true, false);
   }
+}
+
+/**
+ * SVG fragment for the side-elevation curve drawing of one <code>lineID</code>,
+ * sharing its x-axis with the developed (rolled-flat) unroll bar so bulbs/anchors
+ * line up vertically across the two views.
+ *
+ * @param {number} lid
+ * @param {{xAt: (s:number)=>number, yTop: number, height: number}} layout
+ *   - <code>xAt</code>: the unroll bar's developed-arc-length to pixel mapping.
+ *   - <code>yTop</code>: top of the band in SVG coords.
+ *   - <code>height</code>: total band height in SVG coords.
+ */
+function buildLineProfileBandFragment(lid, layout) {
+  const xAt = layout && layout.xAt;
+  const yTop = Number.isFinite(layout?.yTop) ? layout.yTop : 0;
+  const height = Math.max(80, Number.isFinite(layout?.height) ? layout.height : 220);
+
+  const sorted = LINE_SORTED_BY_LINEID.get(lid);
+  if (!sorted || sorted.length < 2 || typeof xAt !== 'function') return '';
+  const n = sorted.length;
+  const cat = CAT_BY_LINE.get(lid);
+
+  const mounts3 = sorted.map(d => new THREE.Vector3(d.sx, d.syMount, d.sz));
+  const bulbs3 = sorted.map(d => new THREE.Vector3(d.sx, d.syBulb, d.sz));
+
+  let aStart3 = null;
+  let aEnd3 = null;
+  let dA1 = 0;
+  let dA2 = 0;
+  if (cat) {
+    const dE1 = csvDist3(cat.e1, sorted[0]);
+    const dE2 = csvDist3(cat.e2, sorted[0]);
+    const sA = dE1 <= dE2 ? cat.e1 : cat.e2;
+    const eA = sA === cat.e1 ? cat.e2 : cat.e1;
+    aStart3 = csvToSceneVec(sA.px, sA.py, sA.pz);
+    aEnd3 = csvToSceneVec(eA.px, eA.py, eA.pz);
+    dA1 = csvDist3(sA, sorted[0]);
+    dA2 = csvDist3(sorted[n - 1], eA);
+  }
+
+  const cum3 = cumulativeArcLen(mounts3);
+  const coreLen = cum3[n - 1];
+  const sA1 = -dA1;
+  const sA2 = coreLen + dA2;
+
+  let yMin = Infinity;
+  let yMax = -Infinity;
+  for (const m of mounts3) {
+    if (m.y > yMax) yMax = m.y;
+    if (m.y < yMin) yMin = m.y;
+  }
+  for (const b of bulbs3) {
+    if (b.y < yMin) yMin = b.y;
+  }
+  if (aStart3) {
+    if (aStart3.y > yMax) yMax = aStart3.y;
+    if (aStart3.y < yMin) yMin = aStart3.y;
+  }
+  if (aEnd3) {
+    if (aEnd3.y > yMax) yMax = aEnd3.y;
+    if (aEnd3.y < yMin) yMin = aEnd3.y;
+  }
+  yMin -= 0.18;
+  yMax += 0.30;
+  const yRange = Math.max(yMax - yMin, 0.01);
+
+  const padTop = 28;
+  const padBottom = 8;
+  const innerH = Math.max(60, height - padTop - padBottom);
+  const yScale = innerH / yRange;
+  const drawTop = yTop + padTop;
+  const drawBot = drawTop + innerH;
+  const yPx = v => drawBot - (v - yMin) * yScale;
+
+  const centerOut = !!document.getElementById('dimmerCenterOut')?.checked;
+  const spacingM = parseFloat(document.getElementById('dimmerSpacingCm')?.value ?? '33') / 100;
+  const startArc = parseFloat(document.getElementById('dimmerStartOffsetCm')?.value ?? '0') / 100;
+  const haveDim = Number.isFinite(spacingM) && spacingM > 0.005;
+
+  let g = '';
+  if (cat && aStart3 && aEnd3) {
+    const xa1 = xAt(sA1);
+    const ya1 = yPx(aStart3.y);
+    const xa2 = xAt(sA2);
+    const ya2 = yPx(aEnd3.y);
+    g += `<line x1="${xa1}" y1="${ya1}" x2="${xAt(0)}" y2="${yPx(mounts3[0].y)}" stroke="#669" stroke-width="2" stroke-dasharray="6 4"/>`;
+    g += `<line x1="${xAt(coreLen)}" y1="${yPx(mounts3[n - 1].y)}" x2="${xa2}" y2="${ya2}" stroke="#669" stroke-width="2" stroke-dasharray="6 4"/>`;
+    g += `<polygon points="${xa1 - 6},${ya1 - 9} ${xa1 + 6},${ya1 - 9} ${xa1},${ya1}" fill="#669" stroke="#225" stroke-width="0.8"/>`;
+    g += `<text x="${xa1}" y="${ya1 - 13}" text-anchor="middle" fill="#225" font-size="10.5" font-weight="bold" font-family="Courier New, monospace">a1</text>`;
+    g += `<polygon points="${xa2 - 6},${ya2 - 9} ${xa2 + 6},${ya2 - 9} ${xa2},${ya2}" fill="#669" stroke="#225" stroke-width="0.8"/>`;
+    g += `<text x="${xa2}" y="${ya2 - 13}" text-anchor="middle" fill="#225" font-size="10.5" font-weight="bold" font-family="Courier New, monospace">a2</text>`;
+  }
+
+  let pathD = '';
+  for (let i = 0; i < n; i++) {
+    pathD += (i === 0 ? `M${xAt(cum3[i])} ${yPx(mounts3[i].y)}` : ` L${xAt(cum3[i])} ${yPx(mounts3[i].y)}`);
+  }
+  g += `<path d="${pathD}" stroke="#111" stroke-width="2.2" fill="none"/>`;
+
+  for (let i = 0; i < n; i++) {
+    const xi = xAt(cum3[i]);
+    const yMt = yPx(mounts3[i].y);
+    const yBl = yPx(bulbs3[i].y);
+    g += `<line x1="${xi}" y1="${yMt}" x2="${xi}" y2="${yBl}" stroke="#085" stroke-width="1.6"/>`;
+    g += `<line x1="${xi}" y1="${yMt - 6}" x2="${xi}" y2="${yMt + 6}" stroke="#085" stroke-width="2.2"/>`;
+    g += `<circle cx="${xi}" cy="${yBl}" r="3.2" fill="#085" stroke="#042" stroke-width="0.5"/>`;
+    const lbl = bulbonlineLabel(sorted[i]);
+    g += `<text x="${xi}" y="${yMt - 9}" text-anchor="middle" fill="#042" font-size="8.5" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(lbl)}</text>`;
+    if (Number.isFinite(sorted[i].cable) && sorted[i].cable > 0.001) {
+      const cx = xi + 6;
+      const cy = (yMt + yBl) / 2;
+      g += `<text x="${cx}" y="${cy}" transform="rotate(-90 ${cx} ${cy})" text-anchor="middle" dominant-baseline="central" fill="#444" font-size="7.5" font-family="Courier New, monospace">${escapeSvgText(formatLenM(sorted[i].cable))}</text>`;
+    }
+  }
+
+  if (haveDim) {
+    const dimS = dimmerIntrinsicSPerBulb(n, cum3, spacingM, startArc, centerOut);
+    for (let k = 0; k < dimS.length; k++) {
+      const s = dimS[k];
+      const onCore = s >= -1e-8 && s <= coreLen + 1e-8;
+      const sClamp = Math.max(0, Math.min(s, coreLen));
+      let i = 1;
+      while (i < n && cum3[i] < sClamp) i++;
+      const i0 = i - 1;
+      const i1 = Math.min(i, n - 1);
+      const segLen = cum3[i1] - cum3[i0];
+      const u = segLen > 1e-12 ? (sClamp - cum3[i0]) / segLen : 0;
+      const yK = (1 - u) * mounts3[i0].y + u * mounts3[i1].y;
+      const xc = xAt(s);
+      const yc = yPx(yK);
+      const stroke = onCore ? '#b06' : '#a85';
+      g += `<line x1="${xc}" y1="${yc - 6}" x2="${xc}" y2="${yc + 6}" stroke="${stroke}" stroke-width="1.4"/>`;
+      g += `<circle cx="${xc}" cy="${yc}" r="4" fill="none" stroke="${stroke}" stroke-width="1.3"/>`;
+    }
+  }
+
+  return g;
 }
 
 function updateDimmerSliderHints() {
