@@ -103,13 +103,14 @@
       title="-1 = entire rig; otherwise one row by index in sorted lineID list">
     <div id="lineFilterStats" class="hint" style="margin:8px 0 0 0;display:none;line-height:1.5;font-size:10px;color:#aaa"></div>
     <div style="margin-top:10px">
-      <label>Dimmer spacing along curve <span id="dimmerSpacingHint">32</span> cm</label><br>
-      <input type="range" id="dimmerSpacingCm" min="20" max="35" value="32" step="0.5">
-      <div style="font-size:10px;color:#666;margin-top:3px">Fixed ethernet ≈ spacing − 5 cm dimmer: <b><span id="dimmerEthCableHint">27.0</span></b> cm</div>
+      <label>Dimmer spacing along curve <span id="dimmerSpacingHint">33</span> cm</label><br>
+      <input type="range" id="dimmerSpacingCm" min="20" max="35" value="33" step="0.5">
+      <div style="font-size:10px;color:#666;margin-top:3px">Fixed ethernet ≈ spacing − 5 cm dimmer: <b><span id="dimmerEthCableHint">28.0</span></b> cm</div>
       <div id="dimmerCountHint" style="font-size:10px;color:#888;margin-top:5px;line-height:1.35;display:none"></div>
       <label style="display:inline-block;margin-top:8px">First dimmer offset on curve <span id="dimmerOffsetHint">0</span> cm</label><br>
       <input type="range" id="dimmerStartOffsetCm" min="0" max="250" value="0" step="0.5">
-      <p class="hint" style="margin:4px 0 0 0">One dimmer per bulb along the hang polyline when a row is selected (magenta); extension (yellow) only if spacing+offset pushes any dimmer past the last hang. Cyan spheres = arc-length midpoint of each row’s hang curve (always).</p>
+      <label class="gizmo-chk" style="margin-top:8px;display:block"><input type="checkbox" id="dimmerCenterOut"> Center fixed pitch on middle bulb (grow both ways)</label>
+      <p class="hint" style="margin:4px 0 0 0">One dimmer per bulb when a row is selected (magenta). <b>From start</b>: fixed spacing from first hang + offset. <b>Center</b>: middle bulb’s joint and its dimmer share one arc-length; same spacing runs toward both ends (offset shifts the whole chain). Yellow = extension before first hang and/or past last hang if needed. Cyan spheres = arc midpoint per row (always).</p>
     </div>
   </div>
   <div>
@@ -131,7 +132,9 @@
   <div>
     <label>Weights export</label><br>
     <button type="button" id="exportLineWeights" style="background:#111;border:1px solid #333;color:#ccc;padding:6px 8px;font-family:inherit;font-size:12px;cursor:pointer;width:100%">Per-line weights (CSV)</button>
+    <button type="button" id="exportSourceArcCsv" style="background:#111;border:1px solid #333;color:#ccc;padding:6px 8px;font-family:inherit;font-size:12px;cursor:pointer;width:100%;margin-top:6px">Source CSV + arc distances (CSV)</button>
     <p class="hint" style="margin:4px 0 0 0">Bulb cable &amp; ethernet totals, gram breakdown per <code>lineID</code> · uses <code>indoor-weights.csv</code></p>
+    <p class="hint" style="margin:2px 0 0 0;color:#777">Arc export: <code>arc_m_from_bulbonline0</code> = polyline arc (m) from this row’s line’s <code>bulbonline</code> 0 hang (else first hang) to this row’s hang. <code>export_row_label</code> = <code>row {lineID}, pos {bulbonline}, id {index}</code>. Synthetic rows bracket each line with chord-to-wall-anchor (a1 before first, a2 after last).</p>
   </div>
   <div class="hint">
     <b>Cable</b>: <code id="cableKeyHint">Bulbcablelength(M)</code> (auto-detected from header)<br>
@@ -151,7 +154,7 @@
 
 <div id="view2d" aria-hidden="true">
   <p class="unroll-caption">
-    Left = start of hang curve (<b>bulb-on-line</b> order, CSV mount path). Solid bar = hangs only; brown dashed = extension past last hang if dimmers require it.
+    Left = start of hang curve (<b>bulb-on-line</b> order, CSV mount path). Solid bar = hangs only; brown dashed = extension before first hang and/or past last hang if fixed-pitch dimmers require it.
     Indigo dashed segments at each end show the straight chord from the wall anchors <b>a1</b>/<b>a2</b> to the first/last bulb (CSV catenary endpoints).
     <b>S</b> = total developed length. Segment labels are metres (e.g. <code>0.335m</code>, <code>8.710m</code>). Grey slanted lines join each bulb joint to its dimmer centre (same index).
     <b>server</b> is drawn on the side of the strip toward CSV plan (<code>4</code>, <code>11</code>) — nearer first hang vs last hang.
@@ -201,7 +204,7 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 // =====================================================================
 // CSV SOURCE — change this single line to point at a different dataset.
 // Bulb mounts and per-lineID catenary geometry are read from the same file.
-const DATA_FILE = '002_gridbased.csv';
+const DATA_FILE = '002_gridbased-2.csv';
 // =====================================================================
 
 {
@@ -522,6 +525,8 @@ let HEADERS = [];
 /** Per–lineID catenary geometry, sourced from the same CSV. */
 let CAT_BY_LINE = new Map();
 let ALL = [];
+/** Original CSV row objects (same order as <code>ALL</code>) for round-trip export. */
+let RAW_CSV_ROWS = [];
 let VIZ = [];
 let CABLE_KEY = 'Bulbcablelength(M)';
 let WEIGHT_COEFF = {
@@ -539,6 +544,7 @@ try {
   const text = await res.text();
   const parsed = parseCSV(text);
   HEADERS = parsed.headers;
+  RAW_CSV_ROWS = parsed.rows;
   CSV_UP_AXIS = detectCsvUpAxisFromRows(HEADERS, parsed.rows);
   if (CSV_UP_AXIS === 'Z')
     console.info('[csv-up] vertical axis: CSV +Z → Three.js +Y (default or Up column)');
@@ -860,6 +866,184 @@ for (let li = 0; li < lineIDs.length; li++) {
   for (let i = 0; i < arr.length; i++) arr[i]._indexInLine = i + 1;
   LINE_SORTED_BY_LINEID.set(lid, arr);
 }
+
+function escapeCsvCell(val) {
+  const s = val === undefined || val === null ? '' : String(val);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+/** Polyline arc length (m) along hang positions in CSV space; <code>cum[0]=0</code>. */
+function cumulativeArcLenCsvMounts(sorted) {
+  const pts = sorted.map(d => new THREE.Vector3(d.px, d.py, d.pz));
+  return cumulativeArcLen(pts);
+}
+
+function chordMetersWallToFirstHang(lid) {
+  const sorted = LINE_SORTED_BY_LINEID.get(lid);
+  const cat = CAT_BY_LINE.get(lid);
+  if (!sorted?.length || !cat) return NaN;
+  const firstBulb = sorted[0];
+  const dE1 = csvDist3(cat.e1, firstBulb);
+  const dE2 = csvDist3(cat.e2, firstBulb);
+  const startA = dE1 <= dE2 ? cat.e1 : cat.e2;
+  return csvDist3(startA, firstBulb);
+}
+
+function chordMetersLastHangToWall(lid) {
+  const sorted = LINE_SORTED_BY_LINEID.get(lid);
+  const cat = CAT_BY_LINE.get(lid);
+  if (!sorted?.length || !cat) return NaN;
+  const lastBulb = sorted[sorted.length - 1];
+  const dE1 = csvDist3(cat.e1, sorted[0]);
+  const dE2 = csvDist3(cat.e2, sorted[0]);
+  const startA = dE1 <= dE2 ? cat.e1 : cat.e2;
+  const endA = startA === cat.e1 ? cat.e2 : cat.e1;
+  return csvDist3(lastBulb, endA);
+}
+
+/** Per <code>lineID</code>: arc m from bulbonline 0 hang (else first hang) to each hang in sort order. */
+function arcFromBl0VectorByLineId() {
+  const map = new Map();
+  for (const lid of lineIDs) {
+    const sorted = LINE_SORTED_BY_LINEID.get(lid);
+    if (!sorted || sorted.length < 1) continue;
+    const cum = cumulativeArcLenCsvMounts(sorted);
+    let anchorIx = sorted.findIndex(d => Number.isFinite(d.bulbonline) && d.bulbonline === 0);
+    if (anchorIx < 0) anchorIx = 0;
+    const vec = [];
+    for (let j = 0; j < sorted.length; j++) vec.push(Math.abs(cum[j] - cum[anchorIx]));
+    map.set(lid, vec);
+  }
+  return map;
+}
+
+function firstLastBulbRowIndexByLineId() {
+  const first = new Map();
+  const last = new Map();
+  for (let i = 0; i < ALL.length; i++) {
+    const rec = ALL[i];
+    if (!rec || rec.isGizmo) continue;
+    const lid = rec.lineID;
+    if (!Number.isFinite(lid)) continue;
+    if (!first.has(lid)) first.set(lid, i);
+    last.set(lid, i);
+  }
+  return { first, last };
+}
+
+function exportRowLabel(rec) {
+  if (!rec || rec.isGizmo) return '';
+  const lid = Number.isFinite(rec.lineID) ? String(rec.lineID) : '—';
+  const pos = bulbonlineLabel(rec);
+  const idx = Number.isFinite(rec.index) ? String(rec.index) : '—';
+  return `row ${lid}, pos ${pos}, id ${idx}`;
+}
+
+function syntheticRowLabel(lid, suffix) {
+  return `row ${lid}, pos —, id — (${suffix})`;
+}
+
+/** Field accuracy: physical measurements are 1 mm, so all metre values export at 3 decimals. */
+const EXPORT_M_DECIMALS = 3;
+function fmtMeters(v) {
+  return Number.isFinite(v) ? v.toFixed(EXPORT_M_DECIMALS) : '';
+}
+
+function exportSourceCsvWithArcDistances() {
+  if (!RAW_CSV_ROWS.length || !HEADERS.length) {
+    showErr('No source CSV rows to export.');
+    return;
+  }
+  const extraHeaders = [
+    'export_row_label',
+    'export_note',
+    'chord_m_to_wall_anchor',
+    'arc_m_from_bulbonline0'
+  ];
+  const allHeaders = HEADERS.concat(extraHeaders);
+  const arcByLid = arcFromBl0VectorByLineId();
+  const { first, last } = firstLastBulbRowIndexByLineId();
+  const linesOut = [];
+  linesOut.push(allHeaders.map(escapeCsvCell).join(','));
+
+  const emptyRow = () => HEADERS.map(() => '');
+  const cableKeyForExport = CABLE_KEY;
+  const formatSourceCell = (h, raw) => {
+    if (h === cableKeyForExport) {
+      const n = Number(raw);
+      if (Number.isFinite(n)) return fmtMeters(n);
+    }
+    return raw ?? '';
+  };
+
+  for (let i = 0; i < RAW_CSV_ROWS.length; i++) {
+    const rec = ALL[i];
+    const raw = RAW_CSV_ROWS[i];
+
+    if (rec && !rec.isGizmo && Number.isFinite(rec.lineID)) {
+      const lid = rec.lineID;
+      if (first.get(lid) === i) {
+        const chord = chordMetersWallToFirstHang(lid);
+        const extra = [
+          syntheticRowLabel(lid, 'before first hang'),
+          'synthetic_row_before_first_hang',
+          fmtMeters(chord),
+          ''
+        ];
+        linesOut.push([...emptyRow(), ...extra].map(escapeCsvCell).join(','));
+      }
+    }
+
+    {
+      const base = HEADERS.map(h => escapeCsvCell(formatSourceCell(h, raw[h])));
+      const rowLab = exportRowLabel(rec);
+      const note = '';
+      const chord = '';
+      let arcOne = '';
+      if (rec && !rec.isGizmo && Number.isFinite(rec.lineID)) {
+        const vec = arcByLid.get(rec.lineID);
+        const j = Number.isFinite(rec._indexInLine) ? rec._indexInLine - 1 : -1;
+        if (vec && j >= 0 && j < vec.length && Number.isFinite(vec[j])) {
+          arcOne = fmtMeters(vec[j]);
+        }
+      }
+      linesOut.push(
+        [...base, escapeCsvCell(rowLab), escapeCsvCell(note), escapeCsvCell(chord), escapeCsvCell(arcOne)].join(',')
+      );
+    }
+
+    if (rec && !rec.isGizmo && Number.isFinite(rec.lineID)) {
+      const lid = rec.lineID;
+      if (last.get(lid) === i) {
+        const chord = chordMetersLastHangToWall(lid);
+        const extra = [
+          syntheticRowLabel(lid, 'after last hang'),
+          'synthetic_row_after_last_hang',
+          fmtMeters(chord),
+          ''
+        ];
+        linesOut.push([...emptyRow(), ...extra].map(escapeCsvCell).join(','));
+      }
+    }
+  }
+
+  const body = linesOut.join('\r\n') + '\r\n';
+  const blob = new Blob([body], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:-]/g, '').replace('T', '_');
+  const base = String(DATA_FILE || 'rig').replace(/[^\w.-]+/g, '_');
+  a.href = url;
+  a.download = `source_arc_dist_${base}_${stamp}.csv`;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+document.getElementById('exportSourceArcCsv')?.addEventListener('click', exportSourceCsvWithArcDistances);
 
 function rowNeighbors(d) {
   const arr = LINE_SORTED_BY_LINEID.get(d.lineID);
@@ -1377,13 +1561,72 @@ function pointAndTangentAtS(pts, cum, sM) {
   return { p, tangent: tang };
 }
 
+/** Arc length from first hang along core polyline (m); may be &lt; 0 or &gt; coreLen. */
+function dimmerIntrinsicSPerBulb(nBulbs, cumCore, spacingM, startM, centerOut) {
+  const out = new Array(nBulbs);
+  const startArc = Number.isFinite(startM) ? Math.max(0, startM) : 0;
+  if (!centerOut || nBulbs < 1) {
+    for (let k = 0; k < nBulbs; k++) out[k] = startArc + k * spacingM;
+    return out;
+  }
+  const mid = Math.floor((nBulbs - 1) / 2);
+  const anchorS = cumCore[mid];
+  for (let k = 0; k < nBulbs; k++) out[k] = anchorS + (k - mid) * spacingM + startArc;
+  return out;
+}
+
+/** Prepend/append straight extensions so every intrinsic <code>s</code> maps into the chain. Returns query arc = <code>shift + s</code> for <code>pointAndTangentAtS</code>. */
+function buildExtendedHangPolylineForDimmerS(pts, cumCore, spacingM, dimS) {
+  const n = pts.length;
+  const coreLen = cumCore[n - 1];
+  let sMin = dimS[0];
+  let sMax = dimS[0];
+  for (let i = 1; i < dimS.length; i++) {
+    if (dimS[i] < sMin) sMin = dimS[i];
+    if (dimS[i] > sMax) sMax = dimS[i];
+  }
+
+  let extPre = null;
+  let prependLen = 0;
+  if (sMin < -1e-8) {
+    prependLen = Math.max(-sMin + spacingM * 4, 0.35);
+    const dir01 = pts[1].clone().sub(pts[0]);
+    if (dir01.lengthSq() < 1e-18) dir01.set(0, 1, 0);
+    else dir01.normalize();
+    extPre = pts[0].clone().addScaledVector(dir01, -prependLen);
+  }
+
+  let extTip = null;
+  let appendLen = 0;
+  if (sMax > coreLen + 1e-8) {
+    appendLen = Math.max(sMax - coreLen + spacingM * 4, 0.35);
+    const extDir = pts[n - 1].clone().sub(pts[n - 2]);
+    if (extDir.lengthSq() < 1e-18) extDir.set(0, 1, 0);
+    else extDir.normalize();
+    extTip = pts[n - 1].clone().addScaledVector(extDir, appendLen);
+  }
+
+  const ptsList = [];
+  if (extPre) ptsList.push(extPre);
+  for (let i = 0; i < n; i++) ptsList.push(pts[i]);
+  if (extTip) ptsList.push(extTip);
+  const ptsExt = ptsList;
+  const cumExt = cumulativeArcLen(ptsExt);
+  const shift = extPre ? extPre.distanceTo(pts[0]) : 0;
+  return { ptsExt, cumExt, shift, extPre, extTip, prependLen, appendLen, coreLen };
+}
+
 function rebuildAllCurveMidpoints() {
   while (curveMidpointsGroup.children.length > 0) {
     curveMidpointsGroup.remove(curveMidpointsGroup.children[0]);
   }
   curveMidpointsGroup.visible = true;
   curveMidpointsGroup.renderOrder = 42;
-  for (let li = 0; li < lineIDs.length; li++) {
+  const idx = lineFilterSliderIdx();
+  const single = idx >= 0 && idx < lineIDs.length;
+  const liStart = single ? idx : 0;
+  const liEnd = single ? idx + 1 : lineIDs.length;
+  for (let li = liStart; li < liEnd; li++) {
     const lid = lineIDs[li];
     const sorted = LINE_SORTED_BY_LINEID.get(lid);
     if (!sorted || sorted.length < 2) continue;
@@ -1496,8 +1739,9 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
     ids = filt >= 0 && filt < lineIDs.length ? [lineIDs[filt]] : lineIDs.slice();
   }
 
-  const spacingM = parseFloat(document.getElementById('dimmerSpacingCm')?.value ?? '32') / 100;
+  const spacingM = parseFloat(document.getElementById('dimmerSpacingCm')?.value ?? '33') / 100;
   const startArc = parseFloat(document.getElementById('dimmerStartOffsetCm')?.value ?? '0') / 100;
+  const centerOut = !!document.getElementById('dimmerCenterOut')?.checked;
 
   const baseMarginL = 104;
   const baseMarginR = 52;
@@ -1555,9 +1799,6 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
     if (coreLen < 1e-9) continue;
 
     const nBulbs = sorted.length;
-    const startA = Number.isFinite(startArc) ? Math.max(0, startArc) : 0;
-    const lastDimmerS = startA + (nBulbs - 1) * spacingM;
-    const barEnd = Math.max(coreLen, lastDimmerS);
 
     const catEntry = CAT_BY_LINE.get(lid);
     let dStartChord = 0;
@@ -1572,6 +1813,16 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
       dStartChord = csvDist3(startAnchor, sorted[0]);
       dEndChord = csvDist3(sorted[nBulbs - 1], endAnchor);
     }
+
+    const dimS = dimmerIntrinsicSPerBulb(nBulbs, cum, spacingM, startArc, centerOut);
+    let dimMin = dimS[0];
+    let dimMax = dimS[0];
+    for (let i = 1; i < dimS.length; i++) {
+      if (dimS[i] < dimMin) dimMin = dimS[i];
+      if (dimS[i] > dimMax) dimMax = dimS[i];
+    }
+    const barEnd = Math.max(coreLen, dimMax);
+    const barDimLow = Math.min(0, dimMin);
 
     const dSrvFirst = Math.hypot(
       sorted[0].px - SERVER_ROOM_CSV.px,
@@ -1589,7 +1840,7 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
     else marginL += serverSidePad;
 
     const innerW = W - marginL - marginR;
-    const barLeftS = -dStartChord;
+    const barLeftS = Math.min(-dStartChord, barDimLow);
     const barRightS = barEnd + dEndChord;
     const developedTotal = barRightS - barLeftS;
     const scale = innerW / Math.max(developedTotal, 1e-6);
@@ -1609,8 +1860,12 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
     const firstBl = sorted[0];
     const lastBl = sorted[sorted.length - 1];
     const title = forPdf
-      ? `lineID ${lid} · bulb-on-line ${bulbonlineLabel(firstBl)}-${bulbonlineLabel(lastBl)} · ${nBulbs} hangs`
-      : `lineID ${lid} · bulb-on-line ${bulbonlineLabel(firstBl)}→${bulbonlineLabel(lastBl)} · ${nBulbs} hangs`;
+      ? `lineID ${lid} · bulb-on-line ${bulbonlineLabel(firstBl)}-${bulbonlineLabel(lastBl)} · ${nBulbs} hangs${
+          centerOut ? ' · center pitch' : ''
+        }`
+      : `lineID ${lid} · bulb-on-line ${bulbonlineLabel(firstBl)}→${bulbonlineLabel(lastBl)} · ${nBulbs} hangs${
+          centerOut ? ' · center pitch' : ''
+        }`;
 
     let g = `<g>`;
     g += `<text x="${marginL}" y="${yTitle}" fill="#1a1a1a" font-size="13" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(title)}</text>`;
@@ -1624,6 +1879,10 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
     }
 
     g += `<line x1="${xAt(0)}" y1="${yBar}" x2="${xAt(coreLen)}" y2="${yBar}" stroke="#111" stroke-width="6" stroke-linecap="butt"/>`;
+
+    if (barDimLow < -1e-6) {
+      g += `<path d="M ${xAt(barDimLow)} ${yBar} L ${xAt(0)} ${yBar}" stroke="#a0522d" stroke-width="5" fill="none" stroke-dasharray="12 7" stroke-linecap="round" stroke-linejoin="round"/>`;
+    }
 
     if (catEntry) {
       const tickH = 14;
@@ -1639,9 +1898,6 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
         g += `<text x="${xa}" y="${yBar - labelOffset}" text-anchor="middle" fill="#225" font-size="9.5" font-weight="bold" font-family="Courier New, monospace">a2</text>`;
       }
     }
-
-    const dimS = [];
-    for (let k = 0; k < nBulbs; k++) dimS.push(startA + k * spacingM);
 
     g += `<g opacity="0.65" stroke="#557" stroke-width="0.85" fill="none">`;
     for (let k = 0; k < nBulbs; k++) {
@@ -1979,6 +2235,7 @@ function rebuildDimmerMarkers() {
     }
     return;
   }
+  const centerOut = !!document.getElementById('dimmerCenterOut')?.checked;
   const pts = polylineMountsScene(sorted);
   const cumCore = cumulativeArcLen(pts);
   const coreLen = cumCore[cumCore.length - 1];
@@ -1997,27 +2254,9 @@ function rebuildDimmerMarkers() {
 
   const n = pts.length;
   const nBulbs = sorted.length;
-  const startArc = Number.isFinite(startM) ? Math.max(0, startM) : 0;
-  const lastDimmerS = startArc + (nBulbs - 1) * spacingM;
-  const needsExtension = lastDimmerS > coreLen + 1e-8;
-
-  const extDir = pts[n - 1].clone().sub(pts[n - 2]);
-  if (extDir.lengthSq() < 1e-18) extDir.set(0, 1, 0);
-  else extDir.normalize();
-
-  let ptsExt;
-  let cumExt;
-  let extendM = 0;
-  let extTip = null;
-  if (needsExtension) {
-    extendM = Math.max(lastDimmerS - coreLen + spacingM * 4, 0.35);
-    extTip = pts[n - 1].clone().addScaledVector(extDir, extendM);
-    ptsExt = pts.concat([extTip]);
-    cumExt = cumulativeArcLen(ptsExt);
-  } else {
-    ptsExt = pts;
-    cumExt = cumCore;
-  }
+  const dimS = dimmerIntrinsicSPerBulb(nBulbs, cumCore, spacingM, startM, centerOut);
+  const ext = buildExtendedHangPolylineForDimmerS(pts, cumCore, spacingM, dimS);
+  const { ptsExt, cumExt, shift, extPre, extTip, prependLen, appendLen } = ext;
 
   const lineMatCore = buildPolylineLineMaterial({ color: 0xff44aa, opacity: 0.38 });
   const lineMatExt = buildPolylineLineMaterial({ color: 0xffcc66, opacity: 0.52 });
@@ -2025,13 +2264,21 @@ function rebuildDimmerMarkers() {
   const coreLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMatCore);
   coreLine.renderOrder = 40;
   dimmerGroup.add(coreLine);
-  if (needsExtension && extTip) {
-    const extSeg = new THREE.Line(
+  if (extPre) {
+    const preSeg = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([extPre, pts[0]]),
+      lineMatExt
+    );
+    preSeg.renderOrder = 40;
+    dimmerGroup.add(preSeg);
+  }
+  if (extTip) {
+    const postSeg = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints([pts[n - 1], extTip]),
       lineMatExt
     );
-    extSeg.renderOrder = 40;
-    dimmerGroup.add(extSeg);
+    postSeg.renderOrder = 40;
+    dimmerGroup.add(postSeg);
   }
 
   const catEntry = CAT_BY_LINE.get(lineIDs[idx]);
@@ -2059,11 +2306,15 @@ function rebuildDimmerMarkers() {
   }
 
   let onCore = 0;
+  let pastStart = 0;
   let pastEnd = 0;
   for (let k = 0; k < nBulbs; k++) {
-    const s = startArc + k * spacingM;
-    const { p, tangent } = pointAndTangentAtS(ptsExt, cumExt, s);
-    const past = s > coreLen + 1e-8;
+    const s = dimS[k];
+    const sQuery = shift + s;
+    const { p, tangent } = pointAndTangentAtS(ptsExt, cumExt, sQuery);
+    const before = s < -1e-8;
+    const after = s > coreLen + 1e-8;
+    const past = before || after;
     const mesh = new THREE.Mesh(dimmerStickGeo, past ? dimmerStickMatPast : dimmerStickMat);
     mesh.quaternion.setFromUnitVectors(dimmerUpRef, tangent);
     mesh.position.copy(p);
@@ -2073,20 +2324,32 @@ function rebuildDimmerMarkers() {
       mesh.scale.set(f, 1, f);
     }
     dimmerGroup.add(mesh);
-    if (past) pastEnd++;
+    if (before) pastStart++;
+    else if (after) pastEnd++;
     else onCore++;
   }
 
   if (hintEl) {
     hintEl.style.display = 'block';
-    const extNote = needsExtension
-      ? ` · <span style="color:#888">extension ${extendM.toFixed(2)} m</span>`
-      : ` · <span style="color:#888">no extension drawn</span>`;
-    const pastPhrase =
-      pastEnd === 0
+    const extBits = [];
+    if (prependLen > 1e-6) extBits.push(`start +${prependLen.toFixed(2)} m`);
+    if (appendLen > 1e-6) extBits.push(`end +${appendLen.toFixed(2)} m`);
+    const extNote =
+      extBits.length > 0
+        ? ` · <span style="color:#888">extension ${extBits.join(' · ')}</span>`
+        : ` · <span style="color:#888">no extension drawn</span>`;
+    const modeNote = centerOut ? 'center pitch' : 'from start';
+    const offPoly =
+      pastStart === 0 && pastEnd === 0
         ? 'all on hang polyline'
-        : `<span style="color:#fc8"><b>${pastEnd}</b> past last hang</span> · ${onCore} on polyline`;
-    hintEl.innerHTML = `<b>${nBulbs}</b> dimmer(s) (one per bulb) · ${pastPhrase}${extNote}`;
+        : [
+            pastStart > 0 ? `<span style="color:#fc8"><b>${pastStart}</b> before first hang</span>` : null,
+            pastEnd > 0 ? `<span style="color:#fc8"><b>${pastEnd}</b> past last hang</span>` : null,
+            onCore > 0 ? `${onCore} on polyline` : null
+          ]
+            .filter(Boolean)
+            .join(' · ');
+    hintEl.innerHTML = `<b>${nBulbs}</b> dimmer(s) · <b>${modeNote}</b> · ${offPoly}${extNote}`;
   }
 }
 
@@ -2663,6 +2926,10 @@ document.getElementById('dimmerSpacingCm')?.addEventListener('input', () => {
 });
 document.getElementById('dimmerStartOffsetCm')?.addEventListener('input', () => {
   updateDimmerSliderHints();
+  rebuildDimmerMarkers();
+  if (!viewMode3d) rebuildUnrollSvg();
+});
+document.getElementById('dimmerCenterOut')?.addEventListener('change', () => {
   rebuildDimmerMarkers();
   if (!viewMode3d) rebuildUnrollSvg();
 });
