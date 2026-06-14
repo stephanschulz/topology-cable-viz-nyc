@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Pulse Topology — Cable build steps</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; color: #cdd0d8; font-family: 'Courier New', monospace; overflow: hidden; }
+  #wrap { display: flex; flex-direction: column; height: 100vh; }
+
+  /* ---- top bar ---- */
+  #bar {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 10px 16px; background: #11131b; border-bottom: 1px solid #262a36;
+    font-size: 12px;
+  }
+  #bar .grp { display: flex; align-items: center; gap: 6px; }
+  /* keep all four sliders together on a single row */
+  #sliders { display: flex; align-items: center; gap: 14px; flex-wrap: nowrap; }
+  #bar label { color: #7c8190; text-transform: uppercase; letter-spacing: 1px; font-size: 10px; }
+  select, button, input[type=range] {
+    background: #181b25; border: 1px solid #333947; color: #cdd0d8;
+    font-family: inherit; font-size: 12px; padding: 5px 9px; cursor: pointer;
+  }
+  button:hover, select:hover { border-color: #4a5165; }
+  button.primary { background: #1d3a2e; border-color: #2f6b50; color: #bff0d6; }
+  button:disabled { opacity: .35; cursor: default; }
+  #title { font-size: 13px; color: #fff; font-weight: bold; letter-spacing: .5px; }
+  #title small { color: #6a6f7d; font-weight: normal; letter-spacing: 0; }
+
+  /* ---- stage ---- */
+  #stage { position: relative; flex: 1; min-height: 0; background:
+      radial-gradient(1200px 600px at 50% 0%, #14161f 0%, #0a0a0f 70%); overflow: hidden;
+      cursor: grab; touch-action: none; }
+  svg { display: block; width: 100%; height: 100%; }
+
+  /* element fade-in */
+  .anim { opacity: 0; transition: opacity .45s ease; }
+  .anim.show { opacity: 1; }
+  .focus { filter: drop-shadow(0 0 5px rgba(255,210,120,.9)); }
+
+  /* ---- current-step narration (TOP, above everything) ---- */
+  #narr { padding: 14px 20px 12px; background: #11131b; }
+  #narr h2 { font-size: 16px; color: #fff; margin-bottom: 5px; letter-spacing: .3px; }
+  #narr p { font-size: 13px; color: #b6bcca; line-height: 1.6; max-width: 1100px; }
+
+  /* ---- horizontal section divider ---- */
+  hr.sectionLine { border: 0; height: 2px;
+    background: linear-gradient(90deg,#2f6b50,#3a4150 60%,#262a36); }
+
+  /* ---- cable build-step section (controls + phases + counters) ---- */
+  #buildSection { background: #11131b; border-bottom: 1px solid #262a36; }
+  #phaseStrip { display: flex; align-items: stretch; border-top: 1px solid #1c1f29; }
+  .phaseChip {
+    display: flex; align-items: center; padding: 7px 12px; font-size: 10px;
+    color: #5a606e; border-right: 1px solid #1c1f29; text-transform: uppercase; letter-spacing: 1px;
+    white-space: nowrap;
+  }
+  .phaseChip.active { color: #ffd27a; background: #181b25; }
+  .phaseChip.done { color: #4f8f6c; }
+  #counters {
+    padding: 8px 16px; border-top: 1px solid #1c1f29; font-size: 11px; color: #8b91a0;
+    line-height: 1.7;
+  }
+  #counters b { color: #dfe3ec; }
+  #progWrap { height: 4px; background: #1c1f29; }
+  #progBar { height: 100%; width: 0; background: linear-gradient(90deg,#2f6b50,#7ad6a8); transition: width .25s; }
+  .pill { display:inline-block; padding:1px 6px; border-radius:8px; font-size:10px; margin-left:4px;}
+  .err { position: fixed; inset: 0; display: grid; place-items: center; padding: 40px;
+    background: #1a0606; color: #ffb3b3; font-size: 14px; line-height: 1.6; text-align: center; display:none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <!-- 1) current step description — above everything -->
+  <div id="narr"><h2 id="nTitle">…</h2><p id="nText"></p></div>
+
+  <!-- 2) horizontal section line -->
+  <hr class="sectionLine">
+
+  <!-- 3) cable build-step section: controls + phases + counters -->
+  <div id="buildSection">
+  <div id="bar">
+    <span id="title">Cable build steps <small id="srcHint"></small></span>
+    <div class="grp">
+      <label>line</label>
+      <select id="lineSel"></select>
+    </div>
+    <div class="grp">
+      <button id="restart" title="Back to first step">⏮</button>
+      <button id="prev" title="Previous step">◀ step</button>
+      <button id="play" class="primary" title="Play / pause">▶ play</button>
+      <button id="next" title="Next step">step ▶</button>
+      <button id="end" title="Jump to last step">⏭</button>
+    </div>
+    <div id="sliders">
+    <div class="grp">
+      <label>slow&nbsp;speed</label>
+      <input type="range" id="speed" min="1" max="20" value="9" style="width:70px" title="Pause on slow / double-slow steps">
+    </div>
+    <div class="grp">
+      <label>fast&nbsp;speed</label>
+      <input type="range" id="fastSpeed" min="1" max="20" value="14" style="width:70px" title="Pause on fast (repetitive) steps">
+    </div>
+    <div class="grp">
+      <label>dimmer&nbsp;spacing</label>
+      <input type="range" id="spacing" min="0.20" max="0.40" step="0.005" value="0.33" style="width:90px">
+      <span id="spacingHint" style="color:#aeb3c0">0.330 m</span>
+    </div>
+    <div class="grp">
+      <label>step</label>
+      <input type="range" id="scrub" min="0" max="1" value="0" style="width:150px">
+      <span id="stepHint" style="color:#aeb3c0;min-width:64px;display:inline-block">0 / 0</span>
+    </div>
+    </div><!-- /#sliders -->
+  </div><!-- /#bar -->
+    <div id="phaseStrip"></div>
+    <div id="counters"></div>
+    <div id="progWrap"><div id="progBar"></div></div>
+  </div><!-- /#buildSection -->
+
+  <!-- 4) the animation, at the bottom -->
+  <div id="stage"><svg id="svg" preserveAspectRatio="xMidYMid meet"></svg></div>
+</div>
+<div class="err" id="err"></div>
+
+<script>
+// =====================================================================
+// SOURCE — generated by index.html ("Source CSV + arc distances" export).
+// It already carries every build number: a1/a2 wall offsets, each bulb's
+// arc position along the steel, drop length, cut length, wall-to-wall, +1+1.
+const ARC_CSV = 'source_arc_dist_002_gridbased-3-20260514_134442-richard.csv';
+// =====================================================================
+document.getElementById('srcHint').textContent = '· ' + ARC_CSV;
+
+const svgns = 'http://www.w3.org/2000/svg';
+const $ = id => document.getElementById(id);
+function showErr(m){ const e=$('err'); e.style.display='grid'; e.innerHTML=m; }
+
+// ---- CSV parse (simple, no quoted-comma cells except the label col) ----
+function parseCSV(text){
+  const lines = text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').filter(l=>l.length);
+  const split = line => {
+    const out=[]; let cur='', q=false;
+    for(const ch of line){
+      if(ch==='"') q=!q;
+      else if(ch===',' && !q){ out.push(cur); cur=''; }
+      else cur+=ch;
+    }
+    out.push(cur); return out.map(s=>s.trim());
+  };
+  const headers = split(lines[0]);
+  const rows = [];
+  for(let i=1;i<lines.length;i++){
+    const p = split(lines[i]); const o={};
+    headers.forEach((h,j)=>o[h]=p[j]!==undefined?p[j]:'');
+    rows.push(o);
+  }
+  return { headers, rows };
+}
+const numOr = (s,d=NaN)=>{ const n=Number(s); return Number.isFinite(n)?n:d; };
+
+const COL = {
+  lineID: 'lineID',
+  bos:    'Bulb-on-steel',
+  drop:   'Bulb to steel',
+  cut:    'Bulb Cable length (M)',
+  wall:   'Wall to 1st or last bulb',
+  arc:    'To bulb 0 in M on steel',
+  wtw:    'Steel length walltowall',
+  plus2:  'walltowall + 1 + 1 M',
+  index:  'index',
+};
+
+// Build per-line model. Wall rows (empty lineID, non-empty wall offset) sit
+// before each line's first bulb (a1) and after its last bulb (a2).
+function buildLines(rows){
+  const lines = new Map(); const order = [];
+  let pendingA1 = null, cur = null;
+  for(const r of rows){
+    const lidRaw = (r[COL.lineID]||'').trim();
+    const wallRaw = (r[COL.wall]||'').trim();
+    if(lidRaw===''){
+      if(wallRaw!==''){
+        const v = numOr(wallRaw);
+        if(cur && cur.bulbs.length && cur.a2off==null) cur.a2off = v;   // closes current line
+        else pendingA1 = v;                                            // opens next line
+      }
+      continue;
+    }
+    const lid = +lidRaw;
+    if(!lines.has(lid)){
+      const L = { lid, bulbs:[], a1off:pendingA1, a2off:null,
+                  wtw:numOr(r[COL.wtw]), plus2:numOr(r[COL.plus2]) };
+      lines.set(lid, L); order.push(lid); cur = L; pendingA1 = null;
+    }
+    cur = lines.get(lid);
+    cur.bulbs.push({
+      bos: numOr(r[COL.bos]),
+      drop: numOr(r[COL.drop]),
+      cut: numOr(r[COL.cut]),
+      arc: numOr(r[COL.arc], 0),
+      index: (r[COL.index]||'').trim(),
+    });
+  }
+  // fill gaps & derive extra; CSV is internally consistent:
+  //   wtw = a1off + arc_last + a2off ;  plus2 = wtw + 2*extra
+  for(const L of lines.values()){
+    L.bulbs.sort((a,b)=> (a.arc-b.arc));
+    const arcLast = L.bulbs.length ? L.bulbs[L.bulbs.length-1].arc : 0;
+    if(!Number.isFinite(L.wtw)) L.wtw = (L.a1off||0)+arcLast+(L.a2off||0);
+    if(L.a1off==null && L.a2off!=null) L.a1off = L.wtw - arcLast - L.a2off;
+    if(L.a2off==null && L.a1off!=null) L.a2off = L.wtw - arcLast - L.a1off;
+    if(L.a1off==null){ L.a1off = (L.wtw-arcLast)/2; }
+    if(L.a2off==null){ L.a2off = (L.wtw-arcLast)/2; }
+    if(!Number.isFinite(L.plus2)) L.plus2 = L.wtw + 2;
+    L.extra = (L.plus2 - L.wtw)/2;
+    L.arcLast = arcLast;
+  }
+  return { lines, order };
+}
+
+// ---------------------------------------------------------------------
+let MODEL = null;
+(async function(){
+  try{
+    const res = await fetch(ARC_CSV, { cache:'no-cache' });
+    if(!res.ok) throw new Error(res.status+' '+res.statusText);
+    const { rows } = parseCSV(await res.text());
+    MODEL = buildLines(rows);
+    if(!MODEL.order.length) throw new Error('No lineID rows found in CSV.');
+    initUI();
+  }catch(e){
+    showErr('Could not load <b>'+ARC_CSV+'</b><br><br>'+e.message+
+      '<br><br>Serve this folder with a static server, e.g.<br><code>python3 -m http.server</code>');
+    throw e;
+  }
+})();
+
+// ===================== UI / animation ================================
+const fmt = (v,d=3)=> Number.isFinite(v)? v.toFixed(d) : '—';
+const PHASES = ['Prepare','Anchors','Dimmer grid','Bulb marks','Mount dimmers','Bulb cables','Done'];
+
+// geometry of the drawing
+const W = 1600, H = 760, mL = 80, mR = 80;
+const cableY = 250;
+let svg, scaleX, vScale, curLine, steps, els, ptr, cur = 0, playing=false, timer=null;
+// steel-cable path morph (roll → wiggly → straight)
+let steelPath=null, steelX0=0, steelX1=0, steelY=0, steelAmp=0, steelRAF=null;
+const STEEL_WIGGLE = 9;
+function steelD(amp){
+  if(amp < 0.4) return `M${steelX0},${steelY} L${steelX1},${steelY}`;
+  const segs=28; let d=`M${steelX0},${steelY}`;
+  for(let i=1;i<=segs;i++){
+    const t=i/segs, x=steelX0+(steelX1-steelX0)*t;
+    const y=steelY+Math.sin(t*Math.PI*7)*amp*Math.sin(t*Math.PI); // taper to flat at the ends
+    d+=` L${x.toFixed(1)},${y.toFixed(1)}`;
+  }
+  return d;
+}
+function setSteelAmp(a){ steelAmp=a; if(steelPath) steelPath.setAttribute('d', steelD(a)); }
+function animSteelAmp(to, dur){
+  if(steelRAF) cancelAnimationFrame(steelRAF);
+  const from=steelAmp, t0=performance.now();
+  const run=now=>{ const k=Math.min(1,(now-t0)/dur); setSteelAmp(from+(to-from)*k); if(k<1) steelRAF=requestAnimationFrame(run); };
+  steelRAF=requestAnimationFrame(run);
+}
+
+function svgEl(tag, attrs){ const e=document.createElementNS(svgns,tag); for(const k in attrs) e.setAttribute(k,attrs[k]); return e; }
+function track(el, step, focus=false, hideAt=null){ el.classList.add('anim'); els.push({el,step,focus,hideAt}); return el; }
+
+// ---- zoom / pan of the animation stage (mouse wheel = zoom at cursor) ----
+let vb = null;
+function applyViewBox(){ if(svg && vb) svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`); }
+function resetView(){ vb = {x:0, y:0, w:W, h:H}; applyViewBox(); }
+function setupZoom(stage){
+  stage.addEventListener('wheel', e=>{
+    e.preventDefault();
+    const ctm = svg.getScreenCTM(); if(!ctm || !vb) return;
+    const p = svg.createSVGPoint(); p.x = e.clientX; p.y = e.clientY;
+    const c = p.matrixTransform(ctm.inverse());       // cursor in user/viewBox coords
+    let f = e.deltaY < 0 ? 0.88 : 1/0.88;             // wheel up = zoom in
+    const minW = W*0.05, maxW = W;   // full view (load state) is the most zoomed-out
+    let nw = vb.w*f;
+    if(nw < minW) f = minW/vb.w;
+    if(nw > maxW) f = maxW/vb.w;
+    vb.x = c.x - (c.x - vb.x)*f;                       // keep the point under the cursor fixed
+    vb.y = c.y - (c.y - vb.y)*f;
+    vb.w *= f; vb.h *= f;
+    applyViewBox();
+  }, {passive:false});
+
+  // click-drag to pan
+  let panning=false, sx=0, sy=0, ox=0, oy=0;
+  stage.addEventListener('pointerdown', e=>{
+    panning=true; sx=e.clientX; sy=e.clientY; ox=vb.x; oy=vb.y;
+    stage.setPointerCapture?.(e.pointerId); stage.style.cursor='grabbing';
+  });
+  stage.addEventListener('pointermove', e=>{
+    if(!panning || !vb) return;
+    const ctm = svg.getScreenCTM(); const s = ctm ? ctm.a : 1;   // px per user unit
+    vb.x = ox - (e.clientX - sx)/s;
+    vb.y = oy - (e.clientY - sy)/s;
+    applyViewBox();
+  });
+  const endPan=()=>{ panning=false; stage.style.cursor=''; };
+  stage.addEventListener('pointerup', endPan);
+  stage.addEventListener('pointerleave', endPan);
+  stage.addEventListener('dblclick', resetView);   // reset zoom
+}
+
+function initUI(){
+  svg = $('svg');
+  resetView();
+  setupZoom($('stage'));
+  const sel = $('lineSel');
+  for(const lid of MODEL.order){
+    const L = MODEL.lines.get(lid);
+    const o = document.createElement('option');
+    o.value = lid; o.textContent = `line ${lid}  (${L.bulbs.length} bulbs)`;
+    sel.appendChild(o);
+  }
+  sel.addEventListener('change', ()=> loadLine(+sel.value));
+  $('play').addEventListener('click', togglePlay);
+  $('next').addEventListener('click', ()=>{ stop(); setStep(cur+1); });
+  $('prev').addEventListener('click', ()=>{ stop(); setStep(cur-1); });
+  $('restart').addEventListener('click', ()=>{ stop(); setStep(0); });
+  $('end').addEventListener('click', ()=>{ stop(); setStep(steps.length-1); });
+  $('scrub').addEventListener('input', e=>{ stop(); setStep(+e.target.value); });
+  $('speed');
+  $('spacing').addEventListener('input', e=>{
+    $('spacingHint').textContent = (+e.target.value).toFixed(3)+' m';
+    const keep = cur; loadLine(curLine.lid, true); setStep(Math.min(keep, steps.length-1));
+  });
+  document.addEventListener('keydown', e=>{
+    if(e.key==='ArrowRight'){ stop(); setStep(cur+1); }
+    else if(e.key==='ArrowLeft'){ stop(); setStep(cur-1); }
+    else if(e.key===' '){ e.preventDefault(); togglePlay(); }
+  });
+  buildPhaseStrip();
+  loadLine(MODEL.order[0]);
+}
+
+function buildPhaseStrip(){
+  const strip = $('phaseStrip'); strip.innerHTML='';
+  PHASES.forEach((p,i)=>{
+    const d = document.createElement('div'); d.className='phaseChip'; d.dataset.phase=i;
+    d.textContent = p; strip.appendChild(d);
+  });
+}
+
+const xFor = m => mL + m*scaleX;     // metres from cable start → svg x
+
+// ---- build all SVG elements + the step script for one line ----
+function loadLine(lid, keepSpacing){
+  curLine = MODEL.lines.get(lid);
+  $('lineSel').value = lid;
+  const L = curLine;
+  scaleX = (W - mL - mR) / L.plus2;
+  const maxDrop = Math.max(0.1, ...L.bulbs.map(b=>b.drop));
+  vScale = Math.min(130, (H - cableY - 70) / (maxDrop + 0.6));
+  const spacing = +$('spacing').value;
+
+  // positions (metres from cable start)
+  const extra = L.extra;
+  const posA1 = extra;
+  const posFirst = extra + L.a1off;            // bulb 0 == dimmer 0
+  const N = L.bulbs.length;
+  const posBulb = i => posFirst + L.bulbs[i].arc;
+  const posDim  = k => posFirst + k*spacing;
+  const posLastDim = posDim(N-1);
+  const posA2 = posBulb(N-1) + L.a2off;
+  const posEnd = L.plus2;
+  const lastDimToA2 = posA2 - posLastDim;
+
+  // all dimension labels stack ABOVE the steel cable, on three levels
+  const yTot  = cableY - 104;   // total cut length (top)
+  const yWall = cableY - 74;    // a1 -> a2 wall-to-wall (right under the total)
+  const ySeg  = cableY - 44;    // every per-segment dimension
+
+  // reset scene
+  svg.innerHTML=''; els=[]; steps=[];
+  const layCable = svgEl('g',{}); const layMarks = svgEl('g',{});
+  const layDim = svgEl('g',{}); const layBulb = svgEl('g',{}); const layTop = svgEl('g',{});
+  svg.append(layCable, layMarks, layDim, layBulb, layTop);
+
+  // pace: 'slow' = full slider pause · 'fast' = 1/4 of it · 'double' = 2x
+  const addStep = (phase, title, detail, focusX, pace='slow')=>{ steps.push({phase,title,detail,focusX,pace}); return steps.length-1; };
+
+  // ---------- PHASE: Prepare ----------
+  const sRoll = addStep('Prepare','Steel cable on the roll',
+    `Start with the steel cable still coiled on its roll.`, null);
+  const sCut = addStep('Prepare','Cut the steel cable',
+    `Wall-to-wall a1→a2 = <b>${fmt(L.wtw)} m</b>. Add 1.000 m at each end → unroll &amp; cut <b>${fmt(L.plus2)} m</b> from the roll.`, null);
+  const sFlat = addStep('Prepare','Lay the cable flat',
+    `Roll the ${fmt(L.plus2)} m length out straight on the floor. Left end = start of the run.`, null);
+
+  // the steel cable itself — a path so it can unspool wiggly then straighten
+  steelX0=xFor(0); steelX1=xFor(posEnd); steelY=cableY; steelAmp=STEEL_WIGGLE;
+  steelPath=svgEl('path',{fill:'none',stroke:'#9aa3b5','stroke-width':4,'stroke-linecap':'round',
+      pathLength:1,'stroke-dasharray':1,'stroke-dashoffset':1,d:steelD(STEEL_WIGGLE)});
+  steelPath.style.transition='stroke-dashoffset .8s ease, opacity .45s ease';
+  track(steelPath, sCut);
+  // end caps
+  for(const x of [0, posEnd]){
+    track(svgEl('line',{x1:xFor(x),y1:cableY-12,x2:xFor(x),y2:cableY+12,stroke:'#cfd5e2','stroke-width':3}), sCut);
+  }
+  // total length label (top level)
+  track(dimBracket(xFor(0), xFor(posEnd), yTot, `${fmt(L.plus2)} m  cut length`, '#9aa3b5'), sCut);
+  // a "roll" hint on the left
+  const roll = svgEl('g',{});
+  roll.append(svgEl('circle',{cx:xFor(0)-34,cy:cableY,r:26,fill:'none',stroke:'#555c6c','stroke-width':3}));
+  roll.append(svgEl('circle',{cx:xFor(0)-34,cy:cableY,r:14,fill:'none',stroke:'#555c6c','stroke-width':2}));
+  roll.append(text(xFor(0)-34, cableY+44,'roll','#6a7080',11,'middle'));
+  track(roll, sRoll);
+
+  layCable.append(...els.map(o=>o.el).filter(e=>!e._moved));
+
+  // helper to push an element into a specific layer and track it
+  const put = (layer, el, step, focus=false, hideAt=null)=>{ layer.append(el); track(el, step, focus, hideAt); return el; };
+
+  // ---------- PHASE: Anchors (a1) ----------
+  const sA1 = addStep('Anchors','Mark anchor a1',
+    `From the start measure <b>1.000 m</b> and mark <b>a1</b> (the first hanging point side).`, posA1);
+  put(layMarks, anchorTick(posA1,'a1','#ffb454'), sA1, true);
+  put(layMarks, dimBracket(xFor(0), xFor(posA1), ySeg, `1.000 m`, '#ffb454'), sA1, true);
+
+  // ---------- PHASE: Dimmer grid ----------
+  const sFirst = addStep('Dimmer grid','Mark the first dimmer',
+    `From a1 measure <b>${fmt(L.a1off)} m</b> to dimmer <b>id 0</b> (also where bulb 0 mounts).`, posFirst);
+  put(layDim, dimmerTick(posFirst, 0), sFirst, true);
+  put(layDim, dimBracket(xFor(posA1), xFor(posFirst), ySeg, `${fmt(L.a1off)} m`, '#7ad6a8'), sFirst, true);
+
+  const dimStepIx = [];
+  for(let k=1;k<N;k++){
+    // id 0→1 slow, id 2 … 2nd-last fast, 2nd-last→last slow
+    const pace = (k>=2 && k<=N-2) ? 'fast' : 'slow';
+    const s = addStep('Dimmer grid',`Dimmer mark ${k+1} / ${N}`,
+      `White mark <b>${fmt(spacing)} m</b> from the previous → dimmer <b>id ${k}</b>.`, posDim(k), pace);
+    dimStepIx[k]=s;
+    put(layDim, dimmerTick(posDim(k), k), s, true);
+  }
+  // spacing bracket sample on the first gap
+  if(N>1) put(layDim, dimBracket(xFor(posDim(0)), xFor(posDim(1)), ySeg, `${fmt(spacing)} m`, '#7ad6a8'), dimStepIx[1]);
+
+  // ---------- PHASE: Anchors (a2 + end) ----------
+  const sA2 = addStep('Anchors','Mark anchor a2',
+    `From the last dimmer (id ${N-1}) measure <b>${fmt(lastDimToA2)} m</b> to <b>a2</b>.`+
+    (lastDimToA2<0?` <span style="color:#ff9b9b">(grid overruns a2 — shorten last gaps)</span>`:''), posA2);
+  put(layMarks, anchorTick(posA2,'a2','#ffb454'), sA2, true);
+  put(layMarks, dimBracket(xFor(posLastDim), xFor(posA2), ySeg, `${fmt(Math.abs(lastDimToA2))} m`, '#ffb454'), sA2, true);
+  // a1 -> a2 wall-to-wall, right under the total cut length
+  put(layMarks, dimBracket(xFor(posA1), xFor(posA2), yWall, `${fmt(L.wtw)} m  a1→a2 (wall-to-wall)`, '#ffb454'), sA2);
+
+  const sEnd = addStep('Anchors','Cable end',
+    `From a2 measure <b>1.000 m</b> → end of cable. Total laid = <b>${fmt(L.plus2)} m</b>.`, posEnd);
+  put(layMarks, dimBracket(xFor(posA2), xFor(posEnd), ySeg, `1.000 m`, '#ffb454'), sEnd, true);
+
+  // ---------- PHASE: Bulb marks ----------
+  const bulbMarkIx=[];
+  for(let i=0;i<N;i++){
+    const s = addStep('Bulb marks',`Bulb mark ${i+1} / ${N}`,
+      `Back from the start: mark bulb mount <b>id ${i}</b> at <b>${fmt(posBulb(i))} m</b> from the cable start (a1 + ${fmt(L.bulbs[i].arc)} m).`, posBulb(i), 'fast');
+    bulbMarkIx[i]=s;
+    put(layMarks, bulbTick(posBulb(i), i), s, true);
+  }
+
+  // ---------- PHASE: Mount dimmers ----------
+  const placeIx=[];
+  for(let k=0;k<N;k++){
+    const s = addStep('Mount dimmers',`Mount dimmer ${k+1} / ${N}`,
+      `Centre dimmer <b>id ${k}</b> on its mark; zip-tie the steel to the dimmer body with <b>2 ties</b>.`, posDim(k), k<=1 ? 'slow' : 'fast');
+    placeIx[k]=s;
+    put(layDim, dimmerBody(posDim(k)), s, true);
+  }
+
+  // ---------- PHASE: Bulb cables ----------
+  const cableIx=[];
+  let totalCut = 0;
+  for(let i=0;i<N;i++){ totalCut += Number.isFinite(L.bulbs[i].cut)?L.bulbs[i].cut:0; }
+  const hS = scaleX;                 // 1 m horizontal == same scale as the steel
+  for(let i=0;i<N;i++){
+    const b = L.bulbs[i];
+    const drop = b.drop, cut = b.cut, coil = (Number.isFinite(cut)&&Number.isFinite(drop))? cut-drop : NaN;
+
+    if(i===0){
+      // --- detailed prep, laid out horizontally below the steel cable (own larger scale) ---
+      const pS   = Math.min(300, (W - mL - 240) / Math.max(0.8, cut));  // px per metre, fills the width
+      const fz   = 14;                       // bigger, readable labels
+      const yP   = cableY + 175;
+      const xL   = xFor(posBulb(0));          // steel-side end of the flat cable
+      const xMark= xL + 0.5*pS;               // tie mark (0.5 m from the end)
+      const xLamp= xL + cut*pS;               // lamp end
+
+      const sLay = addStep('Bulb cables','Bulb cable 0 — lay flat',
+        `Cut bulb cable 0 to <b>${fmt(cut)} m</b> (hang height + 0.50 m) and lay it flat below the steel cable.`, posBulb(0));
+      const sMark = addStep('Bulb cables','Bulb cable 0 — mark hang height',
+        `From the lamp measure the hang height <b>${fmt(drop)} m</b> and mark it — this mark ties to the steel.`, posBulb(0));
+      const sCoil = addStep('Bulb cables','Bulb cable 0 — coil the spare',
+        `Coil the remaining <b>${fmt(coil)} m</b> at the steel side, ready to tie off.`, posBulb(0), 'double');
+      const sRot = addStep('Bulb cables','Bulb cable 0 — rotate into place',
+        `Tie the mark to bulb mark id 0 on the steel and rotate the cable down into its hanging position.`, posBulb(0));
+
+      // flat cable + lamp (appear at lay-flat, vanish at rotate)
+      put(layBulb, svgEl('line',{x1:xL,y1:yP,x2:xLamp,y2:yP,stroke:'#cf8a3a','stroke-width':3,'stroke-linecap':'round'}), sLay, false, sRot);
+      // label to the left of the cable start
+      put(layBulb, text(xL-16, yP+5, 'bulb cable', '#cf8a3a', fz, 'end'), sLay, false, sRot);
+      const lampG = svgEl('g',{});
+      lampG.append(svgEl('circle',{cx:xLamp,cy:yP,r:9,fill:'none',stroke:'#e0a35a','stroke-width':2}));
+      lampG.append(svgEl('circle',{cx:xLamp,cy:yP,r:4,fill:'#ffe7a8'}));
+      lampG.append(text(xLamp,yP+26,'lamp','#b09a72',fz,'middle'));
+      put(layBulb, lampG, sLay, false, sRot);
+      put(layBulb, text(xL,yP-16,'steel side','#8b91a0',fz,'start'), sLay, false, sRot);
+
+      // hang-height mark + dimension
+      const markG = svgEl('g',{});
+      markG.append(svgEl('line',{x1:xMark,y1:yP-18,x2:xMark,y2:yP+18,stroke:'#56d6e6','stroke-width':2.5}));
+      markG.append(text(xMark,yP-24,'tie mark','#56d6e6',fz,'middle'));
+      put(layBulb, markG, sMark, true, sRot);
+      put(layBulb, dimBracket(xMark,xLamp,yP+50,`${fmt(drop)} m  hang height`,'#cf8a3a',fz), sMark, false, sRot);
+
+      // coil of the spare + dimension
+      const coilG = svgEl('g',{}); const xc=(xL+xMark)/2;
+      coilG.append(svgEl('circle',{cx:xc,cy:yP,r:11,fill:'none',stroke:'#e0a35a','stroke-width':2}));
+      coilG.append(svgEl('circle',{cx:xc,cy:yP,r:6,fill:'none',stroke:'#e0a35a','stroke-width':1.5}));
+      put(layBulb, coilG, sCoil, true, sRot);
+      put(layBulb, dimBracket(xL,xMark,yP-40,`${fmt(coil)} m coil`,'#e0a35a',fz), sCoil, false, sRot);
+
+      // the real vertical hang — rotates down into place at the rotate step
+      const v = bulbCable(posBulb(0), drop, cut, 0);
+      v.style.transformBox = 'view-box';
+      v.style.transformOrigin = `${xL}px ${cableY}px`;
+      v.style.transition = 'opacity .45s ease, transform .6s ease';
+      v.style.transform = 'rotate(-90deg)';
+      v.dataset.rot = '1';
+      layBulb.append(v); track(v, sRot, true);
+      cableIx[0] = sRot;
+      continue;
+    }
+
+    // --- bulbs 1..N-1: just placed as a finished hang ---
+    const s = addStep('Bulb cables',`Bulb cable ${i+1} / ${N}`,
+      `Bulb <b>id ${i}</b>: from the lamp measure <b>${fmt(drop)} m</b>, mark it, tie to bulb mark id ${i}; `+
+      `coil the spare <b>${fmt(coil)} m</b> (cut ${fmt(cut)} m) and tie it off.`, posBulb(i), 'fast');
+    cableIx[i]=s;
+    put(layBulb, bulbCable(posBulb(i), drop, cut, i), s, true);
+  }
+
+  const sDone = addStep('Done','Line complete',
+    `Line ${L.lid}: <b>${N}</b> bulbs · <b>${N}</b> dimmers · steel ${fmt(L.plus2)} m · `+
+    `bulb cable Σ ≈ <b>${fmt(totalCut)} m</b>.`, null);
+
+  // remember phase boundaries for counters
+  curLine._ix = { sCut,sFlat,sA1,sFirst,dimStepIx,sA2,sEnd,bulbMarkIx,placeIx,cableIx,sDone,N,totalCut,spacing };
+
+  // moving "work pointer"
+  ptr = svgEl('g',{class:'anim'});
+  ptr.append(svgEl('path',{d:'M0,-14 L9,-30 L-9,-30 Z', fill:'#ffd27a'}));
+  ptr.append(svgEl('line',{x1:0,y1:-14,x2:0,y2:14,stroke:'#ffd27a','stroke-width':1.5,'stroke-dasharray':'3 3'}));
+  layTop.append(ptr);
+
+  // controls range
+  $('scrub').max = steps.length-1;
+
+  // first paint
+  // (re-track the cable/end/total elements already appended into els but not in a layer)
+  els.forEach(o=>{ if(!o.el.parentNode) layCable.append(o.el); });
+
+  if(!keepSpacing) resetView();   // reset zoom when switching line
+  setStep(keepSpacing? Math.min(cur, steps.length-1) : 0);
+}
+
+// ---------- element factories ----------
+function text(x,y,str,fill,size=12,anchor='start',weight='normal'){
+  const t = svgEl('text',{x,y,fill,'font-size':size,'font-family':"'Courier New',monospace",'text-anchor':anchor,'font-weight':weight});
+  t.textContent = str; return t;
+}
+function anchorTick(m,label,color){
+  const g = svgEl('g',{});
+  const x = xFor(m);
+  g.append(svgEl('line',{x1:x,y1:cableY-30,x2:x,y2:cableY+30,stroke:color,'stroke-width':2.5}));
+  g.append(svgEl('circle',{cx:x,cy:cableY,r:5,fill:color}));
+  g.append(text(x, cableY-38, label, color, 14,'middle','bold'));
+  return g;
+}
+function dimmerTick(m,k){
+  const g = svgEl('g',{}); const x = xFor(m);
+  g.append(svgEl('line',{x1:x,y1:cableY-22,x2:x,y2:cableY,stroke:'#eef2ff','stroke-width':2}));
+  if(k%4===0) g.append(text(x, cableY-26, String(k), '#9fb0d8', 10,'middle'));
+  return g;
+}
+function dimmerBody(m){
+  // a horizontal inline device sitting along the steel cable (wider than tall)
+  const g = svgEl('g',{}); const x = xFor(m);
+  const w = Math.max(20, scaleX*0.11);   // along the cable
+  const h = 9;                           // short → reads horizontal
+  g.append(svgEl('rect',{x:x-w/2,y:cableY-h/2,width:w,height:h,rx:h/2,
+      fill:'#2b5a8a',stroke:'#7fb6ff','stroke-width':1.2}));
+  // little LED dot in the middle
+  g.append(svgEl('circle',{cx:x,cy:cableY,r:1.8,fill:'#bfe3ff'}));
+  // 2 zip ties near the ends, crossing the steel
+  for(const tx of [x-w/2+3, x+w/2-3]){
+    g.append(svgEl('line',{x1:tx,y1:cableY-h/2-3,x2:tx,y2:cableY+h/2+3,stroke:'#cfd5e2','stroke-width':1.4}));
+  }
+  return g;
+}
+function bulbTick(m,i){
+  const g = svgEl('g',{}); const x = xFor(m);
+  g.append(svgEl('line',{x1:x,y1:cableY,x2:x,y2:cableY+18,stroke:'#56d6e6','stroke-width':2}));
+  if(i%4===0) g.append(text(x, cableY+30, String(i), '#56d6e6', 10,'middle'));
+  return g;
+}
+function bulbCable(m, drop, cut, i){
+  const g = svgEl('g',{}); const x = xFor(m);
+  const yEnd = cableY + (Number.isFinite(drop)?drop:0)*vScale;
+  g.append(svgEl('line',{x1:x,y1:cableY,x2:x,y2:yEnd,stroke:'#cf8a3a','stroke-width':1.6,'stroke-linecap':'round'}));
+  // coil of the spare length
+  g.append(svgEl('circle',{cx:x,cy:yEnd+8,r:6,fill:'none',stroke:'#e0a35a','stroke-width':1.6}));
+  // lamp at the end
+  g.append(svgEl('circle',{cx:x,cy:yEnd+8,r:2.4,fill:'#ffe7a8'}));
+  g.dataset.lbl = `${fmt(drop)}m`;
+  g.dataset.x = x; g.dataset.y = yEnd;
+  return g;
+}
+function dimBracket(x1,x2,y,label,color,size=11){
+  const g = svgEl('g',{});
+  const mid=(x1+x2)/2;
+  const plain=label.replace(/<[^>]+>/g,'');
+  g.append(svgEl('line',{x1,y1:y,x2:x2,y2:y,stroke:color,'stroke-width':1.2}));
+  g.append(svgEl('line',{x1,y1:y-5,x2:x1,y2:y+5,stroke:color,'stroke-width':1.2}));
+  g.append(svgEl('line',{x1:x2,y1:y-5,x2:x2,y2:y+5,stroke:color,'stroke-width':1.2}));
+  const charW=size*0.62, w=plain.length*charW+10, h=size+5;
+  g.append(svgEl('rect',{x:mid-w/2,y:y-h-3,width:w,height:h,rx:3,fill:'#0a0a0f',opacity:.65}));
+  g.append(text(mid, y-7, plain, color, size,'middle'));
+  return g;
+}
+
+// ---------- stepping ----------
+function setStep(i){
+  if(!steps) return;
+  cur = Math.max(0, Math.min(i, steps.length-1));
+  const s = steps[cur];
+  // reveal elements (hideAt makes a part vanish once a later step is reached)
+  for(const o of els){
+    const on = o.step <= cur && (o.hideAt==null || cur < o.hideAt);
+    o.el.classList.toggle('show', on);
+    o.el.classList.toggle('focus', o.focus && o.step === cur);
+    if(o.el.dataset && o.el.dataset.rot){
+      o.el.style.transform = on ? 'rotate(0deg)' : 'rotate(-90deg)';
+    }
+  }
+  // steel cable: unspool from the roll (dash draw) at Cut, straighten at Lay-flat
+  if(steelPath && curLine && curLine._ix){
+    if(cur === curLine._ix.sCut){
+      steelPath.style.strokeDashoffset = 1;                                   // reset…
+      requestAnimationFrame(()=>{ if(steelPath) steelPath.style.strokeDashoffset = 0; }); // …then draw out
+    } else {
+      steelPath.style.strokeDashoffset = cur > curLine._ix.sCut ? 0 : 1;
+    }
+    const wantAmp = cur < curLine._ix.sFlat ? STEEL_WIGGLE : 0;
+    if(playing && Math.abs(wantAmp - steelAmp) > 0.4) animSteelAmp(wantAmp, 650);
+    else if(!playing){ if(steelRAF) cancelAnimationFrame(steelRAF); setSteelAmp(wantAmp); }
+  }
+  // labels on bulb cables only for current focus
+  document.querySelectorAll('#svg text.cablelbl').forEach(t=>t.remove());
+  // move work pointer (CSS transform so it eases between positions)
+  if(s.focusX!=null){
+    ptr.classList.add('show');
+    ptr.style.transition='transform .35s ease';
+    ptr.style.transform=`translate(${xFor(s.focusX)}px,${cableY}px)`;
+  } else {
+    ptr.classList.remove('show');
+  }
+  // narration
+  $('nTitle').textContent = `${cur+1}. ${s.title}`;
+  $('nText').innerHTML = s.detail;
+  // phase strip
+  const order = PHASES;
+  const curPhaseIx = order.indexOf(s.phase);
+  document.querySelectorAll('.phaseChip').forEach((c,ix)=>{
+    c.classList.toggle('active', ix===curPhaseIx);
+    c.classList.toggle('done', ix<curPhaseIx);
+  });
+  // scrub + hints
+  $('scrub').value = cur;
+  $('stepHint').textContent = `${cur+1} / ${steps.length}`;
+  $('progBar').style.width = (100*cur/(steps.length-1))+'%';
+  updateCounters();
+  // buttons
+  $('prev').disabled = cur===0;
+  $('next').disabled = cur===steps.length-1;
+}
+
+function updateCounters(){
+  const ix = curLine._ix, s = steps[cur].phase;
+  const clampN = (start,arr)=> arr&&arr.length? Math.max(0, Math.min(ix.N, cur-(arr[0]??start)+1)) : 0;
+  const dimMarks = cur>=ix.sFirst ? Math.min(ix.N, 1 + (ix.dimStepIx.filter(v=>v!=null&&v<=cur).length)) : 0;
+  const bulbMarks = ix.bulbMarkIx.filter(v=>v<=cur).length;
+  const dimMount = ix.placeIx.filter(v=>v<=cur).length;
+  const bulbDone = ix.cableIx.filter(v=>v<=cur).length;
+  const L = curLine;
+  const sep = ' <span style="color:#3a4150">·</span> ';
+  $('counters').innerHTML =
+    `line <b>${L.lid}</b>${sep}<b>${ix.N}</b> bulbs${sep}steel <b>${fmt(L.plus2)} m</b>`+
+    `${sep}a1 <b>${fmt(L.a1off)}</b> / a2 <b>${fmt(L.a2off)}</b>${sep}pitch <b>${fmt(ix.spacing)} m</b>`+
+    ` &nbsp;<span style="color:#3a4150">|</span>&nbsp; `+
+    `dimmer marks <b>${dimMarks}/${ix.N}</b>${sep}bulb marks <b>${bulbMarks}/${ix.N}</b>`+
+    `${sep}dimmers <b>${dimMount}/${ix.N}</b>${sep}cables <b>${bulbDone}/${ix.N}</b>`+
+    `${sep}Σ cable ≈ <b>${fmt(ix.totalCut)} m</b>`;
+}
+
+// ---------- play ----------
+function togglePlay(){ playing? stop() : play(); }
+function play(){
+  if(cur>=steps.length-1) setStep(0);
+  playing=true; $('play').textContent='⏸ pause';
+  const tick=()=>{
+    if(!playing) return;
+    if(cur>=steps.length-1){ stop(); return; }
+    setStep(cur+1);
+    const sp  = +$('speed').value;         // 1..20
+    const fsp = +$('fastSpeed').value;     // 1..20
+    const slow = 1500 - sp*64;             // SLOW pause: ~1436ms → ~220ms
+    const fast = 540 - fsp*25;             // FAST pause: ~515ms → ~40ms (own slider)
+    const pace = steps[cur] && steps[cur].pace;
+    const delay = pace==='fast' ? fast : pace==='double' ? slow*2 : slow;
+    timer = setTimeout(tick, Math.max(30, delay));
+  };
+  tick();
+}
+function stop(){ playing=false; $('play').textContent='▶ play'; if(timer){ clearTimeout(timer); timer=null; } }
+</script>
+</body>
+</html>
