@@ -204,7 +204,7 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 // =====================================================================
 // CSV SOURCE — change this single line to point at a different dataset.
 // Bulb mounts and per-lineID catenary geometry are read from the same file.
-const DATA_FILE = '002_gridbased-3.csv';
+const DATA_FILE = '002_gridbased-4_snakeDMX.csv';
 // =====================================================================
 
 {
@@ -1681,6 +1681,15 @@ function setViewMode3d(on) {
   }
 }
 
+/**
+ * Text enlargement for the exported PDF. The page auto-fits the whole SVG, so
+ * type only gets bigger on paper if it grows relative to the drawing: fonts and
+ * the gaps that exist solely to hold them scale, the rig geometry does not.
+ */
+const PDF_FONT_SCALE = 2;
+let svgTextScale = 1;
+const svgFs = n => +(n * svgTextScale).toFixed(2);
+
 /** opts.witnessTopHi · opts.labelFontSize · opts.labelRotateDeg (e.g. -90 for segment dims in 2D / PDF). */
 function svgHorizDim(x1, x2, yDim, yWitnessFrom, label, minPxLabel = 20, opts) {
   const lo = Math.min(x1, x2);
@@ -1690,7 +1699,9 @@ function svgHorizDim(x1, x2, yDim, yWitnessFrom, label, minPxLabel = 20, opts) {
   const showLabel = w >= minPxLabel;
   const witnessHiTop =
     opts && Number.isFinite(opts.witnessTopHi) ? opts.witnessTopHi : yWitnessFrom;
-  const labelFs = opts && Number.isFinite(opts.labelFontSize) ? opts.labelFontSize : 10.5;
+  const labelFs = svgFs(
+    opts && Number.isFinite(opts.labelFontSize) ? opts.labelFontSize : 10.5
+  );
   const labelRot = opts && Number.isFinite(opts.labelRotateDeg) ? opts.labelRotateDeg : null;
   const gapAboveLine = 3;
   let labelY = yDim - Math.max(2.5, labelFs * 0.48);
@@ -1730,6 +1741,7 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
   if (includeStackedAbsolute === undefined) includeStackedAbsolute = false;
   opts = opts || {};
   const forPdf = !!opts.forPdf;
+  svgTextScale = forPdf ? PDF_FONT_SCALE : 1;
 
   let ids;
   if (Number.isFinite(opts.singleLineId)) {
@@ -1746,16 +1758,18 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
   const profileBandH = includeProfile ? 240 : 0;
   const profileGap = includeProfile ? 14 : 0;
 
-  const baseMarginL = 104;
-  const baseMarginR = 52;
-  const serverSidePad = 54;
+  // Side margins hold the row captions and the "server" marker, so they follow
+  // the type size. Width is never the page-fit constraint, so this is free.
+  const baseMarginL = 104 * svgTextScale;
+  const baseMarginR = 52 * svgTextScale;
+  const serverSidePad = 54 * svgTextScale;
   const W = Number.isFinite(opts.svgWidth)
     ? Math.max(720, Math.min(2200, opts.svgWidth))
     : Math.max(720, Math.min(1600, innerWidth - 32));
 
   const rowLabX = 10;
   const rowLabStyle =
-    'fill="#2266cc" font-size="9.5" font-family="Courier New, monospace" font-weight="600"';
+    `fill="#2266cc" font-size="${svgFs(9.5)}" font-family="Courier New, monospace" font-weight="600"`;
 
   let originNoteBl = null;
   for (let oi = 0; oi < ids.length; oi++) {
@@ -1771,21 +1785,21 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
   const legX = forPdf ? 10 : W - 215;
   const legTextX = legX + (forPdf ? 118 : 48);
   const svgOriginNote = originNoteBl
-    ? `<text x="10" y="${legendY0 + 20}" fill="#333" font-size="10" font-family="Courier New, monospace">0 = curve origin (first hang / gimbal side · bulb-on-line ${escapeSvgText(
+    ? `<text x="10" y="${legendY0 + 20}" fill="#333" font-size="${svgFs(10)}" font-family="Courier New, monospace">0 = curve origin (first hang / gimbal side · bulb-on-line ${escapeSvgText(
         bulbonlineLabel(originNoteBl)
       )})</text>`
     : '';
   const legMid = r => legYTop + r * legRowH + legRowH / 2;
-  const legTy = r => legMid(r) + 3.5;
+  const legTy = r => legMid(r) + 3.5 * svgTextScale;
   const svgLegend = `<g stroke-linecap="square">
     <line x1="${legX}" y1="${legMid(0)}" x2="${legX + 18}" y2="${legMid(0)}" stroke="#085" stroke-width="2"/>
-    <text x="${legTextX}" y="${legTy(0)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">bulb cable joint</text>
+    <text x="${legTextX}" y="${legTy(0)}" fill="#222" font-size="${svgFs(9.5)}" font-family="Courier New, monospace">bulb cable joint</text>
     <circle cx="${legX + 9}" cy="${legMid(1)}" r="4" fill="none" stroke="#b06" stroke-width="1.4"/>
-    <text x="${legTextX}" y="${legTy(1)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">dimmer centre</text>
+    <text x="${legTextX}" y="${legTy(1)}" fill="#222" font-size="${svgFs(9.5)}" font-family="Courier New, monospace">dimmer centre</text>
     <line x1="${legX}" y1="${legMid(2) + 5}" x2="${legX + 14}" y2="${legMid(2) - 5}" stroke="#557" stroke-width="0.85"/>
-    <text x="${legTextX}" y="${legTy(2)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">${forPdf ? 'joint-dimmer link' : 'joint↔dimmer link'}</text>
+    <text x="${legTextX}" y="${legTy(2)}" fill="#222" font-size="${svgFs(9.5)}" font-family="Courier New, monospace">${forPdf ? 'joint-dimmer link' : 'joint↔dimmer link'}</text>
     <line x1="${legX}" y1="${legMid(3)}" x2="${legX + 32}" y2="${legMid(3)}" stroke="#669" stroke-width="3" stroke-dasharray="6 4"/>
-    <text x="${legTextX}" y="${legTy(3)}" fill="#222" font-size="9.5" font-family="Courier New, monospace">anchor chord</text>
+    <text x="${legTextX}" y="${legTy(3)}" fill="#222" font-size="${svgFs(9.5)}" font-family="Courier New, monospace">anchor chord</text>
   </g>`;
 
   let yCursor = legYTop + 4 * legRowH + 14;
@@ -1852,14 +1866,16 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
 
     const yProfileTop = yCursor;
     const yTitle = yCursor + profileBandH + profileGap;
-    const yBar = yTitle + (forPdf ? 90 : 36);
+    // Gaps holding only text (title band, the two rotated segment-dimension
+    // rows) grow with the type; the bar and its ticks keep their size.
+    const yBar = yTitle + (forPdf ? 90 : 36) * svgTextScale;
     const yWitnessFrom = yBar + 14;
-    const yDimDimmer = yWitnessFrom + 40;
+    const yDimDimmer = yWitnessFrom + 40 * svgTextScale;
     const yWitnessBulb = yDimDimmer + 18;
-    const yDimBulb = yWitnessBulb + 38;
+    const yDimBulb = yWitnessBulb + 38 * svgTextScale;
     const yWitnessTot = yDimBulb + 8;
     const yDimTotal = yWitnessTot + 26;
-    const yBulbIdBase = forPdf ? yTitle + 18 : yBar - 26;
+    const yBulbIdBase = forPdf ? yTitle + 18 * svgTextScale : yBar - 26;
 
     const firstBl = sorted[0];
     const lastBl = sorted[sorted.length - 1];
@@ -1879,7 +1895,7 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
         height: profileBandH
       });
     }
-    g += `<text x="${marginL}" y="${yTitle}" fill="#1a1a1a" font-size="13" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(title)}</text>`;
+    g += `<text x="${marginL}" y="${yTitle}" fill="#1a1a1a" font-size="${svgFs(13)}" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(title)}</text>`;
     g += `<text x="${rowLabX}" y="${yBar + 5}" ${rowLabStyle}>lineID ${lid}</text>`;
 
     if (dStartChord > 1e-6) {
@@ -1901,12 +1917,12 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
       if (startAnchor) {
         const xa = xAt(barLeftS);
         g += `<line x1="${xa}" y1="${yBar - tickH}" x2="${xa}" y2="${yBar + tickH}" stroke="#669" stroke-width="2"/>`;
-        g += `<text x="${xa}" y="${yBar - labelOffset}" text-anchor="middle" fill="#225" font-size="9.5" font-weight="bold" font-family="Courier New, monospace">a1</text>`;
+        g += `<text x="${xa}" y="${yBar - labelOffset}" text-anchor="middle" fill="#225" font-size="${svgFs(9.5)}" font-weight="bold" font-family="Courier New, monospace">a1</text>`;
       }
       if (endAnchor) {
         const xa = xAt(barRightS);
         g += `<line x1="${xa}" y1="${yBar - tickH}" x2="${xa}" y2="${yBar + tickH}" stroke="#669" stroke-width="2"/>`;
-        g += `<text x="${xa}" y="${yBar - labelOffset}" text-anchor="middle" fill="#225" font-size="9.5" font-weight="bold" font-family="Courier New, monospace">a2</text>`;
+        g += `<text x="${xa}" y="${yBar - labelOffset}" text-anchor="middle" fill="#225" font-size="${svgFs(9.5)}" font-weight="bold" font-family="Courier New, monospace">a2</text>`;
       }
     }
 
@@ -1924,12 +1940,12 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
       const x = xAt(cum[i]);
       const idLab = bulbonlineLabel(sorted[i]);
       g += `<line x1="${x}" y1="${yBar - 22}" x2="${x}" y2="${yBar + 14}" stroke="#085" stroke-width="2.2"/>`;
-      g += `<text x="${x}" y="${yBulbIdBase}" text-anchor="middle" fill="#042" font-size="9.5" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(idLab)}</text>`;
+      g += `<text x="${x}" y="${yBulbIdBase}" text-anchor="middle" fill="#042" font-size="${svgFs(9.5)}" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(idLab)}</text>`;
       {
         const cab = sorted[i].cable;
         if (Number.isFinite(cab) && cab > 1e-3) {
           const cy = yBar - 24;
-          g += `<text x="${x}" y="${cy}" transform="rotate(-90 ${x} ${cy})" text-anchor="start" fill="#444" font-size="8" font-family="Courier New, monospace">${formatLenM(cab)}</text>`;
+          g += `<text x="${x}" y="${cy}" transform="rotate(-90 ${x} ${cy})" text-anchor="start" fill="#444" font-size="${svgFs(8)}" font-family="Courier New, monospace">${formatLenM(cab)}</text>`;
         }
       }
     }
@@ -2064,9 +2080,9 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
     }
 
     if (serverTowardCurveEnd) {
-      g += `<text x="${marginL + innerW + 8}" y="${yBar + 5}" fill="#556" font-size="12" font-family="Courier New, monospace" font-style="italic">server</text>`;
+      g += `<text x="${marginL + innerW + 8}" y="${yBar + 5}" fill="#556" font-size="${svgFs(12)}" font-family="Courier New, monospace" font-style="italic">server</text>`;
     } else {
-      g += `<text x="${marginL - 8}" y="${yBar + 5}" text-anchor="end" fill="#556" font-size="12" font-family="Courier New, monospace" font-style="italic">server</text>`;
+      g += `<text x="${marginL - 8}" y="${yBar + 5}" text-anchor="end" fill="#556" font-size="${svgFs(12)}" font-family="Courier New, monospace" font-style="italic">server</text>`;
     }
 
     g += `</g>`;
@@ -2075,7 +2091,7 @@ function rebuildUnrollSvg(forceRebuild, includeStackedAbsolute, opts) {
   }
 
   if (!allG) {
-    svg.innerHTML = `<text x="76" y="52" fill="#222" font-size="14" font-family="Courier New, monospace">No row with ≥2 hangs.</text>`;
+    svg.innerHTML = `<text x="76" y="52" fill="#222" font-size="${svgFs(14)}" font-family="Courier New, monospace">No row with ≥2 hangs.</text>`;
     svg.setAttribute('width', W);
     svg.setAttribute('height', 130);
     svg.setAttribute('viewBox', `0 0 ${W} 130`);
@@ -2114,7 +2130,7 @@ async function exportUnrollPdf() {
   }
 
   const pdfW = 1300;
-  const doc = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'landscape' });
+  const doc = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' });
   const margin = 14;
   const scaleInset = 0.97;
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:-]/g, '').replace('T', '_');
@@ -2122,7 +2138,7 @@ async function exportUnrollPdf() {
 
   try {
     for (let pi = 0; pi < idsToExport.length; pi++) {
-      if (pi > 0) doc.addPage('a4', 'landscape');
+      if (pi > 0) doc.addPage('a4', 'portrait');
       rebuildUnrollSvg(true, true, {
         singleLineId: idsToExport[pi],
         svgWidth: pdfW,
@@ -2218,7 +2234,7 @@ function buildLineProfileBandFragment(lid, layout) {
   yMax += 0.30;
   const yRange = Math.max(yMax - yMin, 0.01);
 
-  const padTop = 28;
+  const padTop = 28; // already clears the enlarged a1/a2 captions; keeps the curve uncompressed
   const padBottom = 8;
   const innerH = Math.max(60, height - padTop - padBottom);
   const yScale = innerH / yRange;
@@ -2240,9 +2256,9 @@ function buildLineProfileBandFragment(lid, layout) {
     g += `<line x1="${xa1}" y1="${ya1}" x2="${xAt(0)}" y2="${yPx(mounts3[0].y)}" stroke="#669" stroke-width="2" stroke-dasharray="6 4"/>`;
     g += `<line x1="${xAt(coreLen)}" y1="${yPx(mounts3[n - 1].y)}" x2="${xa2}" y2="${ya2}" stroke="#669" stroke-width="2" stroke-dasharray="6 4"/>`;
     g += `<polygon points="${xa1 - 6},${ya1 - 9} ${xa1 + 6},${ya1 - 9} ${xa1},${ya1}" fill="#669" stroke="#225" stroke-width="0.8"/>`;
-    g += `<text x="${xa1}" y="${ya1 - 13}" text-anchor="middle" fill="#225" font-size="10.5" font-weight="bold" font-family="Courier New, monospace">a1</text>`;
+    g += `<text x="${xa1}" y="${ya1 - 13}" text-anchor="middle" fill="#225" font-size="${svgFs(10.5)}" font-weight="bold" font-family="Courier New, monospace">a1</text>`;
     g += `<polygon points="${xa2 - 6},${ya2 - 9} ${xa2 + 6},${ya2 - 9} ${xa2},${ya2}" fill="#669" stroke="#225" stroke-width="0.8"/>`;
-    g += `<text x="${xa2}" y="${ya2 - 13}" text-anchor="middle" fill="#225" font-size="10.5" font-weight="bold" font-family="Courier New, monospace">a2</text>`;
+    g += `<text x="${xa2}" y="${ya2 - 13}" text-anchor="middle" fill="#225" font-size="${svgFs(10.5)}" font-weight="bold" font-family="Courier New, monospace">a2</text>`;
   }
 
   let pathD = '';
@@ -2259,11 +2275,19 @@ function buildLineProfileBandFragment(lid, layout) {
     g += `<line x1="${xi}" y1="${yMt - 6}" x2="${xi}" y2="${yMt + 6}" stroke="#085" stroke-width="2.2"/>`;
     g += `<circle cx="${xi}" cy="${yBl}" r="3.2" fill="#085" stroke="#042" stroke-width="0.5"/>`;
     const lbl = bulbonlineLabel(sorted[i]);
-    g += `<text x="${xi}" y="${yMt - 9}" text-anchor="middle" fill="#042" font-size="8.5" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(lbl)}</text>`;
+    g += `<text x="${xi}" y="${yMt - 9}" text-anchor="middle" fill="#042" font-size="${svgFs(8.5)}" font-weight="bold" font-family="Courier New, monospace">${escapeSvgText(lbl)}</text>`;
     if (Number.isFinite(sorted[i].cable) && sorted[i].cable > 0.001) {
-      const cx = xi + 6;
-      const cy = (yMt + yBl) / 2;
-      g += `<text x="${cx}" y="${cy}" transform="rotate(-90 ${cx} ${cy})" text-anchor="middle" dominant-baseline="central" fill="#444" font-size="7.5" font-family="Courier New, monospace">${escapeSvgText(formatLenM(sorted[i].cable))}</text>`;
+      // rotate(-90) turns the glyph height into horizontal reach, leftwards onto
+      // the drop line, so the anchor has to clear the line by a full cap height.
+      // Assumes the alphabetic baseline: svg2pdf may ignore dominant-baseline.
+      const cabFs = svgFs(7.5);
+      const cx = xi + 0.8 + cabFs * 0.6 + 2; // half stroke + cap reach + gap
+      // Bulbs near the sag centre hang on almost no cable, so the label is far
+      // longer than its drop line. Keep it hanging below the mount rather than
+      // letting it ride up across the catenary and the bulb-index label.
+      const cabHalf = (formatLenM(sorted[i].cable).length * 0.6 * cabFs) / 2;
+      const cy = Math.max((yMt + yBl) / 2, yMt + 7 + cabHalf);
+      g += `<text x="${cx}" y="${cy}" transform="rotate(-90 ${cx} ${cy})" text-anchor="middle" dominant-baseline="central" fill="#444" font-size="${cabFs}" font-family="Courier New, monospace">${escapeSvgText(formatLenM(sorted[i].cable))}</text>`;
     }
   }
 
